@@ -141,10 +141,14 @@ export class OnlineTrackerService {
       session.lastActiveAt = now;
       session.currentPath = currentPath;
       session.ip = ip;
-      if (userId && !session.userId) {
+      if (userId) {
         session.userId = userId;
-        session.username = username || `User_${userId}`;
-        session.nickname = nickname || username || '用户';
+        if (username && username !== '访客') {
+          session.username = username;
+        }
+        if (nickname && nickname !== '访客') {
+          session.nickname = nickname;
+        }
       }
 
       // 只有超过 60 秒才异步刷新一次数据库活跃时间，彻底避免高频心跳导致 SQLite/MySQL 锁表

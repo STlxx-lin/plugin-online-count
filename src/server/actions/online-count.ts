@@ -4,6 +4,19 @@ import { SessionControlService } from '../services/session-control.service';
 import { OnlineConfigService } from '../services/online-config.service';
 import { extractClientIp } from '../utils/device-parser';
 
+function parseJwtPayload(token: string): any {
+  try {
+    if (!token || typeof token !== 'string') return null;
+    const cleanToken = token.replace(/^Bearer\s+/i, '').trim();
+    const parts = cleanToken.split('.');
+    if (parts.length >= 2) {
+      const payloadStr = Buffer.from(parts[1], 'base64').toString('utf-8');
+      return JSON.parse(payloadStr);
+    }
+  } catch {}
+  return null;
+}
+
 function getParams(ctx: Context): Record<string, any> {
   const query = ctx.query || ctx.request?.query || {};
   const actionParams = ctx.action?.params || {};
@@ -45,23 +58,25 @@ export function createOnlineCountResource(
           token = ctx.cookies.get('token') || ctx.cookies.get('SESSION') || '';
         }
 
-        // 如果没有提取到 currentUser，尝试解析 Token 或通过 userId 还原用户信息
-        if (!currentUser && token) {
-          try {
-            if ((ctx.app as any)?.jwt) {
-              const decoded: any = (ctx.app as any).jwt.decode(token);
-              if (decoded?.userId) {
-                const userRepo = ctx.db.getRepository('users');
-                currentUser = await userRepo?.findOne({ filterByTk: decoded.userId });
-              }
-            }
-          } catch {}
+        let resolvedUserId = currentUser?.id || params.userId;
+
+        // 1. 如果没有 resolvedUserId，通过原生 Base64 解码 JWT Payload 获取 userId
+        if (!resolvedUserId && token) {
+          const payload = parseJwtPayload(token);
+          if (payload) {
+            resolvedUserId = payload.userId || payload.id || payload.sub;
+          }
         }
 
-        if (!currentUser && params.userId) {
+        // 2. 如果有了 userId 但还没有完整 user 对象，从数据库 users 表快速查出真实用户名与昵称
+        if (resolvedUserId && (!currentUser || !currentUser.username)) {
           try {
             const userRepo = ctx.db.getRepository('users');
-            currentUser = await userRepo?.findOne({ filterByTk: params.userId });
+            if (userRepo) {
+              currentUser = await userRepo.findOne({
+                filter: { id: resolvedUserId },
+              });
+            }
           } catch {}
         }
 
