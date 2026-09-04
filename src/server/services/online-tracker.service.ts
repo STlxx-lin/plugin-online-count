@@ -31,6 +31,7 @@ export interface OnlineSessionItem {
   lastActiveAt: Date;
   isKicked: boolean;
   kickReason?: string;
+  lastDbSync?: number;
 }
 
 export class OnlineTrackerService {
@@ -130,6 +131,7 @@ export class OnlineTrackerService {
         loginAt: now,
         lastActiveAt: now,
         isKicked: false,
+        lastDbSync: now.getTime(),
       };
       this.memorySessions.set(token, session);
 
@@ -145,8 +147,11 @@ export class OnlineTrackerService {
         session.nickname = nickname || username || '用户';
       }
 
-      // 异步更新数据库最后活跃时间
-      this.updateSessionActiveTimeInDb(token, now, currentPath);
+      // 只有超过 60 秒才异步刷新一次数据库活跃时间，彻底避免高频心跳导致 SQLite/MySQL 锁表
+      if (now.getTime() - (session.lastDbSync || 0) > 60000) {
+        session.lastDbSync = now.getTime();
+        this.updateSessionActiveTimeInDb(token, now, currentPath);
+      }
     }
 
     return { success: true, kicked: false };
@@ -478,7 +483,7 @@ export class OnlineTrackerService {
       await repo.update({
         filter: { token },
         values: { lastActiveAt, currentPath },
-      });
+      }).catch(() => {});
     } catch {}
   }
 }
