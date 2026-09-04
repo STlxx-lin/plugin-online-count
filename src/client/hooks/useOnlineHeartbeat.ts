@@ -1,6 +1,41 @@
 import { useEffect, useRef } from 'react';
 import { Modal, message } from 'antd';
 
+function getClientAuthInfo(api: any) {
+  let user = api?.auth?.user || (api as any)?.state?.currentUser;
+  let token = api?.auth?.token || (api as any)?.token;
+
+  if (!user && typeof window !== 'undefined') {
+    try {
+      const storages = [window.localStorage, window.sessionStorage];
+      for (const s of storages) {
+        if (!s) continue;
+        const raw = s.getItem('NOCOBASE_CURRENT_USER') || s.getItem('currentUser') || s.getItem('user');
+        if (raw) {
+          user = JSON.parse(raw);
+          break;
+        }
+      }
+    } catch {}
+  }
+
+  if (!token && typeof window !== 'undefined') {
+    try {
+      const storages = [window.localStorage, window.sessionStorage];
+      for (const s of storages) {
+        if (!s) continue;
+        const t = s.getItem('NOCOBASE_TOKEN') || s.getItem('token') || s.getItem('auth_token');
+        if (t) {
+          token = t;
+          break;
+        }
+      }
+    } catch {}
+  }
+
+  return { user, token };
+}
+
 export function useOnlineHeartbeat(api: any) {
   const isKickedRef = useRef(false);
 
@@ -13,11 +48,17 @@ export function useOnlineHeartbeat(api: any) {
     const sendHeartbeat = async () => {
       if (isKickedRef.current) return;
 
+      const { user, token } = getClientAuthInfo(api);
+
       try {
         const res = await api.request({
           url: 'onlineCount:heartbeat',
           method: 'POST',
           data: {
+            userId: user?.id,
+            username: user?.username || user?.email,
+            nickname: user?.nickname || user?.username,
+            token,
             currentPath: window.location.pathname + window.location.search,
           },
         });

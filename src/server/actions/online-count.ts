@@ -31,7 +31,7 @@ export function createOnlineCountResource(
        */
       heartbeat: async (ctx: Context, next: Next) => {
         const params = getParams(ctx);
-        const currentUser = ctx.state?.currentUser;
+        let currentUser = ctx.state?.currentUser;
 
         // 提取 Token
         let token = params.token;
@@ -44,19 +44,50 @@ export function createOnlineCountResource(
         if (!token && ctx.cookies) {
           token = ctx.cookies.get('token') || ctx.cookies.get('SESSION') || '';
         }
-        if (!token && currentUser?.id) {
-          token = `user_sess_${currentUser.id}_${ctx.ip || '127.0.0.1'}`;
+
+        // 如果没有提取到 currentUser，尝试解析 Token 或通过 userId 还原用户信息
+        if (!currentUser && token) {
+          try {
+            if ((ctx.app as any)?.jwt) {
+              const decoded: any = (ctx.app as any).jwt.decode(token);
+              if (decoded?.userId) {
+                const userRepo = ctx.db.getRepository('users');
+                currentUser = await userRepo?.findOne({ filterByTk: decoded.userId });
+              }
+            }
+          } catch {}
+        }
+
+        if (!currentUser && params.userId) {
+          try {
+            const userRepo = ctx.db.getRepository('users');
+            currentUser = await userRepo?.findOne({ filterByTk: params.userId });
+          } catch {}
         }
 
         const ip = extractClientIp(ctx);
         const userAgent = ctx.headers['user-agent'] || params.userAgent || '';
         const currentPath = params.currentPath || '/';
 
+        if (!token) {
+          if (currentUser?.id) {
+            token = `user_${currentUser.id}_${ip}`;
+          } else if (params.userId) {
+            token = `user_${params.userId}_${ip}`;
+          } else {
+            token = `anonymous_${ip}`;
+          }
+        }
+
+        const finalUserId = currentUser?.id || params.userId || null;
+        const finalUsername = currentUser?.username || currentUser?.email || params.username || (finalUserId ? `User_${finalUserId}` : null);
+        const finalNickname = currentUser?.nickname || currentUser?.username || params.nickname || finalUsername || null;
+
         const result = await trackerService.recordHeartbeat({
-          token: token || `anonymous_${ip}`,
-          userId: currentUser?.id || params.userId || null,
-          username: currentUser?.username || currentUser?.email || params.username || null,
-          nickname: currentUser?.nickname || currentUser?.username || params.nickname || null,
+          token,
+          userId: finalUserId,
+          username: finalUsername,
+          nickname: finalNickname,
           ip,
           userAgent,
           currentPath,
