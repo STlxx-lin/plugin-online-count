@@ -245,7 +245,15 @@ export class BroadcastService {
           if (repo) {
             const record = await repo.findOne({ filter: { broadcastId: id } });
             if (record) {
-              const readUsers = Array.isArray(record.readUsers) ? [...record.readUsers] : [];
+              let readUsers: any[] = [];
+              if (Array.isArray(record.readUsers)) {
+                readUsers = [...record.readUsers];
+              } else if (typeof record.readUsers === 'string') {
+                try {
+                  const p = JSON.parse(record.readUsers);
+                  if (Array.isArray(p)) readUsers = [...p];
+                } catch {}
+              }
               const already = readUsers.some(
                 (u: any) =>
                   (clientInfo.userId && u.userId === clientInfo.userId) ||
@@ -359,6 +367,16 @@ export class BroadcastService {
         if (displayStatus === 'active' && new Date(r.expiresAt).getTime() <= now.getTime()) {
           displayStatus = 'expired';
         }
+        let rowReadUsers: any[] = [];
+        if (Array.isArray(r.readUsers)) {
+          rowReadUsers = r.readUsers;
+        } else if (typeof r.readUsers === 'string') {
+          try {
+            const p = JSON.parse(r.readUsers);
+            if (Array.isArray(p)) rowReadUsers = p;
+          } catch {}
+        }
+
         return {
           id: r.id,
           broadcastId: r.broadcastId,
@@ -371,10 +389,10 @@ export class BroadcastService {
           targetUsername: r.targetUsername,
           targetSessionId: r.targetSessionId,
           status: displayStatus,
-          expiresAt: r.expiresAt,
-          readCount: r.readCount || 0,
-          readUsers: Array.isArray(r.readUsers) ? r.readUsers : [],
-          createdAt: r.createdAt,
+          expiresAt: new Date(r.expiresAt).getTime(),
+          readCount: r.readCount || rowReadUsers.length,
+          readUsers: rowReadUsers,
+          createdAt: new Date(r.createdAt).getTime(),
         };
       });
 

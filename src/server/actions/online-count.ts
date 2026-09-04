@@ -126,7 +126,7 @@ export function createOnlineCountResource(
         // 检查是否有给当前客户端/用户的即时广播或通知
         const seenMessageIds = Array.isArray(params.seenMessageIds) ? params.seenMessageIds : [];
         if (seenMessageIds.length > 0) {
-          broadcastService.recordRead(
+          await broadcastService.recordRead(
             seenMessageIds,
             {
               userId: finalUserId,
@@ -328,7 +328,17 @@ export function createOnlineCountResource(
         if (!record && !isNaN(Number(targetId))) {
           record = await repo?.findOne({ filterByTk: Number(targetId) });
         }
-        const readUsers = Array.isArray(record?.readUsers) ? record.readUsers : [];
+        let rawUsers = record?.readUsers;
+        let readUsers: any[] = [];
+        if (Array.isArray(rawUsers)) {
+          readUsers = rawUsers;
+        } else if (typeof rawUsers === 'string') {
+          try {
+            const parsed = JSON.parse(rawUsers);
+            if (Array.isArray(parsed)) readUsers = parsed;
+          } catch {}
+        }
+
         ctx.body = {
           data: {
             broadcastId: record?.broadcastId || targetId,

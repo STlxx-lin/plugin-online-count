@@ -333,8 +333,18 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
           id: record.id,
         },
       });
-      const resData = res?.data?.data || res?.data || {};
-      const list = Array.isArray(resData) ? resData : (resData.readUsers || []);
+      let payload: any = res?.data;
+      while (payload && payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data) && !payload.readUsers) {
+        payload = payload.data;
+      }
+      let list: any = Array.isArray(payload) ? payload : (payload?.readUsers || payload?.data || []);
+      if (typeof list === 'string') {
+        try {
+          const parsed = JSON.parse(list);
+          if (Array.isArray(parsed)) list = parsed;
+        } catch {}
+      }
+      if (!Array.isArray(list)) list = [];
       setCurrentReaders(list);
     } catch (err: any) {
       if (err?.message === 'Network Error') {
@@ -898,8 +908,10 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       key: 'time',
       width: 200,
       render: (_: any, record: any) => {
-        const isExpired = Date.now() > record.expiresAt;
-        const remainSec = Math.max(0, Math.floor((record.expiresAt - Date.now()) / 1000));
+        const expiresTime = new Date(record.expiresAt).getTime();
+        const isExpired = !isNaN(expiresTime) && Date.now() > expiresTime;
+        const remainSec = isExpired || isNaN(expiresTime) ? 0 : Math.max(0, Math.floor((expiresTime - Date.now()) / 1000));
+        const remainMinutes = Math.max(1, Math.ceil(remainSec / 60));
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontSize: 12 }}>
@@ -907,9 +919,9 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
             </span>
             <Text type="secondary" style={{ fontSize: 11 }}>
               {isExpired ? (
-                <span style={{ color: '#bfbfbf' }}>已于 {new Date(record.expiresAt).toLocaleTimeString()} 过期</span>
+                <span style={{ color: '#bfbfbf' }}>已于 {new Date(expiresTime).toLocaleTimeString()} 过期</span>
               ) : (
-                <span style={{ color: '#52c41a' }}>生效中 (剩余 {Math.ceil(remainSec / 60)} 分钟)</span>
+                <span style={{ color: '#52c41a' }}>生效中 (剩余 {remainMinutes} 分钟)</span>
               )}
             </Text>
           </div>
@@ -924,7 +936,8 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
         if (record.isRevoked) {
           return <Tag color="default">已撤回</Tag>;
         }
-        if (Date.now() > record.expiresAt) {
+        const expiresTime = new Date(record.expiresAt).getTime();
+        if (!isNaN(expiresTime) && Date.now() > expiresTime) {
           return <Tag color="gold">已过期</Tag>;
         }
         return <Tag color="success">正在生效中</Tag>;
@@ -935,7 +948,8 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       key: 'action',
       width: 100,
       render: (_: any, record: any) => {
-        const canRevoke = !record.isRevoked && Date.now() <= record.expiresAt;
+        const expiresTime = new Date(record.expiresAt).getTime();
+        const canRevoke = !record.isRevoked && (isNaN(expiresTime) || Date.now() <= expiresTime);
         if (!canRevoke) {
           return <span style={{ color: '#bfbfbf', fontSize: 12 }}>-</span>;
         }
