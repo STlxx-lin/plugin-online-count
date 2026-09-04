@@ -1,6 +1,30 @@
 import React, { useEffect, useRef } from 'react';
 import { Modal, notification } from 'antd';
 
+const STORAGE_KEY_READ_BROADCASTS = 'NOCOBASE_READ_BROADCAST_IDS';
+
+function getReadBroadcastIds(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY_READ_BROADCASTS);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function markBroadcastAsRead(id: string) {
+  if (typeof window === 'undefined' || !id) return;
+  try {
+    const list = getReadBroadcastIds();
+    if (!list.includes(id)) {
+      list.push(id);
+      if (list.length > 200) list.splice(0, list.length - 200);
+      window.localStorage.setItem(STORAGE_KEY_READ_BROADCASTS, JSON.stringify(list));
+    }
+  } catch {}
+}
+
 function getClientAuthInfo(api: any) {
   let user = api?.auth?.user || (api as any)?.state?.currentUser;
   let token = api?.auth?.token || (api as any)?.token;
@@ -36,16 +60,76 @@ function getClientAuthInfo(api: any) {
   return { user, token };
 }
 
+async function sendHeartbeatRequest(api: any, data: any, token?: string) {
+  // 1. 优先使用标准 NocoBase API Client
+  if (api && typeof api.request === 'function' && !api.__isDummy) {
+    try {
+      const res = await api.request({
+        url: 'onlineCount:heartbeat',
+        method: 'POST',
+        data,
+      });
+      return res?.data?.data || res?.data;
+    } catch (err: any) {
+      if (err?.response) throw err;
+    }
+  }
+
+  // 2. 检查 window 上挂载的全局 APIClient
+  if (typeof window !== 'undefined' && (window as any).__nocobase_api_client__) {
+    try {
+      const res = await (window as any).__nocobase_api_client__.request({
+        url: 'onlineCount:heartbeat',
+        method: 'POST',
+        data,
+      });
+      return res?.data?.data || res?.data;
+    } catch (err: any) {
+      if (err?.response) throw err;
+    }
+  }
+
+  // 3. 原生 fetch 强力兜底（保证在任何页面及路由下都能 100% 连通通信）
+  if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    const resp = await window.fetch('/api/onlineCount:heartbeat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      const error: any = new Error(errData?.message || `HTTP ${resp.status}`);
+      error.response = { status: resp.status, data: errData };
+      throw error;
+    }
+    const json = await resp.json();
+    return json?.data || json;
+  }
+
+  return null;
+}
+
 export function useOnlineHeartbeat(api: any) {
   const isKickedRef = useRef(false);
-  const seenMessageIdsRef = useRef<string[]>([]);
   const lastActivityRef = useRef<number>(Date.now());
   const idleTimeoutMinutesRef = useRef<number>(30);
   const isIdlePromptingRef = useRef(false);
   const idleCountdownTimerRef = useRef<any>(null);
 
   useEffect(() => {
-    if (!api) return;
+    // 保证在整个浏览器标签页内全局只运行一个心跳巡检循环，避免多组件重复实例化
+    if (typeof window !== 'undefined') {
+      if ((window as any).__nocobase_online_heartbeat_running__) {
+        return;
+      }
+      (window as any).__nocobase_online_heartbeat_running__ = true;
+    }
 
     let heartbeatTimer: any = null;
     let idleCheckTimer: any = null;
@@ -59,11 +143,22 @@ export function useOnlineHeartbeat(api: any) {
 
       const { token } = getClientAuthInfo(api);
       try {
-        await api.request({
-          url: 'onlineCount:reportIdle',
-          method: 'POST',
-          data: { token },
-        });
+        if (api && typeof api.request === 'function' && !api.__isDummy) {
+          await api.request({
+            url: 'onlineCount:reportIdle',
+            method: 'POST',
+            data: { token },
+          });
+        } else if (typeof window !== 'undefined') {
+          await window.fetch('/api/onlineCount:reportIdle', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({ token }),
+          });
+        }
       } catch {}
 
       try {
@@ -79,6 +174,8 @@ export function useOnlineHeartbeat(api: any) {
         title: '会话已过期',
         content: reason,
         okText: '重新登录',
+        zIndex: 100000,
+        centered: true,
         onOk: () => {
           window.location.href = '/signin';
         },
@@ -89,24 +186,23 @@ export function useOnlineHeartbeat(api: any) {
       if (isKickedRef.current) return;
 
       const { user, token } = getClientAuthInfo(api);
+      const readMessageIds = getReadBroadcastIds();
 
       try {
-        const res = await api.request({
-          url: 'onlineCount:heartbeat',
-          method: 'POST',
-          data: {
+        const data = await sendHeartbeatRequest(
+          api,
+          {
             userId: user?.id,
             username: user?.username || user?.email,
             nickname: user?.nickname || user?.username,
             token,
-            currentPath: window.location.pathname + window.location.search,
-            seenMessageIds: seenMessageIdsRef.current,
+            currentPath: typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/',
+            seenMessageIds: readMessageIds,
           },
-        });
+          token
+        );
 
-        const data = res?.data?.data || res?.data;
-
-        // 1. 下线阻断检测
+        // 1. 强制下线拦截检测
         if (data?.kicked && !isKickedRef.current) {
           isKickedRef.current = true;
           if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -116,6 +212,8 @@ export function useOnlineHeartbeat(api: any) {
             title: '会话已终止',
             content: data.reason || '您的账号已被管理员强制下线，请重新登录。',
             okText: '重新登录',
+            zIndex: 100000,
+            centered: true,
             onOk: () => {
               window.location.href = '/signin';
             },
@@ -130,32 +228,59 @@ export function useOnlineHeartbeat(api: any) {
 
         // 3. 消费即时广播或定向消息
         if (Array.isArray(data?.broadcasts) && data.broadcasts.length > 0) {
+          const currentReadList = getReadBroadcastIds();
+
           for (const bc of data.broadcasts) {
-            if (seenMessageIdsRef.current.includes(bc.id)) continue;
-            seenMessageIdsRef.current.push(bc.id);
+            // 已阅读过的消息坚决不再展示
+            if (currentReadList.includes(bc.id)) continue;
 
             if (bc.mode === 'modal') {
               Modal.info({
                 title: bc.title || '📢 系统广播通知',
                 content: React.createElement(
                   'div',
-                  { style: { whiteSpace: 'pre-wrap', lineHeight: 1.6 } },
-                  bc.content,
+                  {
+                    style: {
+                      whiteSpace: 'pre-wrap',
+                      lineHeight: 1.6,
+                      fontSize: 14,
+                      color: '#262626',
+                      maxHeight: 400,
+                      overflowY: 'auto',
+                    },
+                  },
+                  bc.content
                 ),
                 okText: '我已知晓',
-                width: 480,
+                width: 520,
+                centered: true,
+                zIndex: 100000,
+                onOk: () => {
+                  markBroadcastAsRead(bc.id);
+                },
+                onCancel: () => {
+                  markBroadcastAsRead(bc.id);
+                },
               });
+              // 弹出后立即加入临时已展示数组，避免同一个心跳包中多重触发
+              currentReadList.push(bc.id);
             } else {
-              notification.info({
+              notification.open({
+                key: bc.id,
                 message: bc.title || '系统广播通知',
                 description: React.createElement(
                   'div',
-                  { style: { whiteSpace: 'pre-wrap' } },
-                  bc.content,
+                  { style: { whiteSpace: 'pre-wrap', fontSize: 13, color: '#595959' } },
+                  bc.content
                 ),
-                duration: 10,
+                type: (bc.type as any) || 'info',
+                duration: 12,
                 placement: 'topRight',
+                onClose: () => {
+                  markBroadcastAsRead(bc.id);
+                },
               });
+              markBroadcastAsRead(bc.id);
             }
           }
         }
@@ -168,6 +293,8 @@ export function useOnlineHeartbeat(api: any) {
             title: '会话已终止',
             content: err.response.data.message || '您已被管理员强制下线，请重新登录。',
             okText: '重新登录',
+            zIndex: 100000,
+            centered: true,
             onOk: () => {
               window.location.href = '/signin';
             },
@@ -203,6 +330,8 @@ export function useOnlineHeartbeat(api: any) {
           ),
           okText: '保持在线',
           cancelText: '立即退出',
+          zIndex: 100000,
+          centered: true,
           onOk: () => {
             lastActivityRef.current = Date.now();
             isIdlePromptingRef.current = false;
@@ -235,7 +364,7 @@ export function useOnlineHeartbeat(api: any) {
       }
     };
 
-    // 监听用户活跃事件
+    // 监听用户活跃事件（节流 1000ms）
     const handleActivity = () => {
       const now = Date.now();
       if (now - lastActivityRef.current > 1000) {
@@ -261,6 +390,9 @@ export function useOnlineHeartbeat(api: any) {
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
+      if (typeof window !== 'undefined') {
+        (window as any).__nocobase_online_heartbeat_running__ = false;
+      }
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (idleCheckTimer) clearInterval(idleCheckTimer);
       if (idleCountdownTimerRef.current) clearInterval(idleCountdownTimerRef.current);
