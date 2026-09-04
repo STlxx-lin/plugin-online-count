@@ -25,36 +25,83 @@ function markBroadcastAsRead(id: string) {
   } catch {}
 }
 
-function getClientAuthInfo(api: any) {
+export function getClientAuthInfo(api?: any) {
   let user = api?.auth?.user || (api as any)?.state?.currentUser;
   let token = api?.auth?.token || (api as any)?.token;
 
-  if (!user && typeof window !== 'undefined') {
+  if (!token && api?.auth?.getToken && typeof api.auth.getToken === 'function') {
     try {
-      const storages = [window.localStorage, window.sessionStorage];
-      for (const s of storages) {
-        if (!s) continue;
-        const raw = s.getItem('NOCOBASE_CURRENT_USER') || s.getItem('currentUser') || s.getItem('user');
-        if (raw) {
-          user = JSON.parse(raw);
-          break;
-        }
-      }
+      token = api.auth.getToken();
     } catch {}
   }
 
-  if (!token && typeof window !== 'undefined') {
-    try {
-      const storages = [window.localStorage, window.sessionStorage];
+  if (!token && api?.axios?.defaults?.headers?.common?.['Authorization']) {
+    const h = api.axios.defaults.headers.common['Authorization'];
+    if (typeof h === 'string') token = h.replace(/^Bearer\s+/i, '').trim();
+  }
+
+  if (typeof window !== 'undefined') {
+    const storages = [window.localStorage, window.sessionStorage].filter(Boolean);
+
+    // 1. 全局扫描所有 Storage Key 寻找 JWT Token (Base64 以 eyJ 开头)
+    if (!token) {
       for (const s of storages) {
-        if (!s) continue;
-        const t = s.getItem('NOCOBASE_TOKEN') || s.getItem('token') || s.getItem('auth_token');
-        if (t) {
-          token = t;
-          break;
-        }
+        try {
+          for (let i = 0; i < s.length; i++) {
+            const k = s.key(i) || '';
+            const v = s.getItem(k) || '';
+            if (typeof v === 'string') {
+              const clean = v.replace(/^Bearer\s+/i, '').replace(/^"|"$/g, '').trim();
+              if (clean.startsWith('eyJ') && clean.split('.').length >= 3) {
+                token = clean;
+                break;
+              }
+            }
+          }
+          if (token) break;
+        } catch {}
       }
-    } catch {}
+    }
+
+    // 2. 扫描常用 Token 命名
+    if (!token) {
+      const commonKeys = ['NOCOBASE_TOKEN', 'NOCOBASE_JWT', 'token', 'auth_token', 'jwt', 'access_token'];
+      for (const s of storages) {
+        for (const k of commonKeys) {
+          const val = s.getItem(k);
+          if (val && val !== 'null' && val !== 'undefined') {
+            token = val.replace(/^"|"$/g, '').replace(/^Bearer\s+/i, '').trim();
+            break;
+          }
+        }
+        if (token) break;
+      }
+    }
+
+    // 3. 扫描用户信息
+    if (!user) {
+      for (const s of storages) {
+        try {
+          for (let i = 0; i < s.length; i++) {
+            const k = s.key(i) || '';
+            if (/user/i.test(k)) {
+              const raw = s.getItem(k);
+              if (raw && (raw.startsWith('{') || raw.startsWith('"{\\'))) {
+                try {
+                  const unescaped = raw.startsWith('"') ? JSON.parse(raw) : raw;
+                  const parsed = typeof unescaped === 'string' ? JSON.parse(unescaped) : unescaped;
+                  if (parsed && (parsed.id || parsed.userId || parsed.username)) {
+                    user = parsed;
+                    break;
+                  }
+                } catch {}
+              }
+            }
+          }
+          if (user) break;
+        } catch {}
+      }
+    }
   }
 
   return { user, token };
@@ -75,7 +122,7 @@ async function sendHeartbeatRequest(api: any, data: any, token?: string) {
     }
   }
 
-  // 2. 检查 window 上挂载的全局 APIClient
+  // 2. 检查全局注入的 APIClient
   if (typeof window !== 'undefined' && (window as any).__nocobase_api_client__) {
     try {
       const res = await (window as any).__nocobase_api_client__.request({
@@ -89,7 +136,7 @@ async function sendHeartbeatRequest(api: any, data: any, token?: string) {
     }
   }
 
-  // 3. 原生 fetch 强力兜底（保证在任何页面及路由下都能 100% 连通通信）
+  // 3. 原生 fetch 强力兜底
   if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -123,14 +170,6 @@ export function useOnlineHeartbeat(api: any) {
   const idleCountdownTimerRef = useRef<any>(null);
 
   useEffect(() => {
-    // 保证在整个浏览器标签页内全局只运行一个心跳巡检循环，避免多组件重复实例化
-    if (typeof window !== 'undefined') {
-      if ((window as any).__nocobase_online_heartbeat_running__) {
-        return;
-      }
-      (window as any).__nocobase_online_heartbeat_running__ = true;
-    }
-
     let heartbeatTimer: any = null;
     let idleCheckTimer: any = null;
     const intervalSec = 30;
@@ -202,7 +241,7 @@ export function useOnlineHeartbeat(api: any) {
           token
         );
 
-        // 1. 强制下线拦截检测
+        // 1. 强制下线拦截
         if (data?.kicked && !isKickedRef.current) {
           isKickedRef.current = true;
           if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -226,12 +265,11 @@ export function useOnlineHeartbeat(api: any) {
           idleTimeoutMinutesRef.current = data.idleTimeoutMinutes;
         }
 
-        // 3. 消费即时广播或定向消息
+        // 3. 消费即时广播通知
         if (Array.isArray(data?.broadcasts) && data.broadcasts.length > 0) {
           const currentReadList = getReadBroadcastIds();
 
           for (const bc of data.broadcasts) {
-            // 已阅读过的消息坚决不再展示
             if (currentReadList.includes(bc.id)) continue;
 
             if (bc.mode === 'modal') {
@@ -262,7 +300,6 @@ export function useOnlineHeartbeat(api: any) {
                   markBroadcastAsRead(bc.id);
                 },
               });
-              // 弹出后立即加入临时已展示数组，避免同一个心跳包中多重触发
               currentReadList.push(bc.id);
             } else {
               notification.open({
@@ -303,7 +340,7 @@ export function useOnlineHeartbeat(api: any) {
       }
     };
 
-    // 空闲超时巡检（每 5 秒检查一次活跃时间戳）
+    // 空闲超时检查
     const checkIdle = () => {
       const idleMinutes = idleTimeoutMinutesRef.current;
       if (!idleMinutes || idleMinutes <= 0 || isKickedRef.current) return;
@@ -312,7 +349,6 @@ export function useOnlineHeartbeat(api: any) {
       const timeoutMs = idleMinutes * 60 * 1000;
       const warnThresholdMs = Math.max(0, timeoutMs - 60 * 1000);
 
-      // 仅对已登录用户启用空闲保护
       const { user } = getClientAuthInfo(api);
       if (!user?.id) return;
 
@@ -364,7 +400,6 @@ export function useOnlineHeartbeat(api: any) {
       }
     };
 
-    // 监听用户活跃事件（节流 1000ms）
     const handleActivity = () => {
       const now = Date.now();
       if (now - lastActivityRef.current > 1000) {
@@ -377,6 +412,7 @@ export function useOnlineHeartbeat(api: any) {
       window.addEventListener(event, handleActivity, { passive: true });
     });
 
+    // 挂载时立即执行一次心跳上报
     sendHeartbeat();
     heartbeatTimer = setInterval(sendHeartbeat, intervalSec * 1000);
     idleCheckTimer = setInterval(checkIdle, 5000);
@@ -390,9 +426,6 @@ export function useOnlineHeartbeat(api: any) {
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      if (typeof window !== 'undefined') {
-        (window as any).__nocobase_online_heartbeat_running__ = false;
-      }
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (idleCheckTimer) clearInterval(idleCheckTimer);
       if (idleCountdownTimerRef.current) clearInterval(idleCountdownTimerRef.current);

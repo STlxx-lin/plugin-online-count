@@ -97,7 +97,7 @@ export class OnlineTrackerService {
     }
 
     // 2. 若不统计访客且未登录，直接放行不入库
-    const trackGuests = this.configService.getBoolean(CONFIG_KEYS.TRACK_GUESTS, false);
+    const trackGuests = this.configService.getBoolean(CONFIG_KEYS.TRACK_GUESTS, true);
     if (!userId && !trackGuests) {
       return { success: true, kicked: false };
     }

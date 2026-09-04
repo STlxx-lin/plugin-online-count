@@ -10,10 +10,14 @@ import { CONFIG_KEYS } from '../constants';
 function parseJwtPayload(token: string): any {
   try {
     if (!token || typeof token !== 'string') return null;
-    const cleanToken = token.replace(/^Bearer\s+/i, '').trim();
+    const cleanToken = token.replace(/^Bearer\s+/i, '').replace(/^"|"$/g, '').trim();
     const parts = cleanToken.split('.');
     if (parts.length >= 2) {
-      const payloadStr = Buffer.from(parts[1], 'base64').toString('utf-8');
+      let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4 !== 0) {
+        b64 += '=';
+      }
+      const payloadStr = Buffer.from(b64, 'base64').toString('utf-8');
       return JSON.parse(payloadStr);
     }
   } catch {}

@@ -45,10 +45,12 @@ import {
   MessageOutlined,
 } from '@ant-design/icons';
 import { OnlineTrendChart } from './OnlineTrendChart';
+import { useOnlineHeartbeat, getClientAuthInfo } from '../hooks/useOnlineHeartbeat';
 
 const { Text } = Typography;
 
 export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
+  useOnlineHeartbeat(api);
   const [activeTab, setActiveTab] = useState('sessions');
   const [stats, setStats] = useState({
     totalOnline: 0,
@@ -283,8 +285,26 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   };
 
   useEffect(() => {
-    fetchStats();
-    fetchSessions(1, pageSize);
+    const initDashboard = async () => {
+      try {
+        const { user, token } = getClientAuthInfo(api);
+        await api?.request?.({
+          url: 'onlineCount:heartbeat',
+          method: 'POST',
+          data: {
+            userId: user?.id,
+            username: user?.username || user?.email,
+            nickname: user?.nickname || user?.username,
+            token,
+            currentPath: typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/',
+          },
+        });
+      } catch {}
+      fetchStats();
+      fetchSessions(1, pageSize);
+    };
+
+    initDashboard();
   }, []);
 
   useEffect(() => {
@@ -654,7 +674,21 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
           <Switch checked={autoRefresh} onChange={setAutoRefresh} size="small" />
           <Button
             icon={<ReloadOutlined />}
-            onClick={() => {
+            onClick={async () => {
+              try {
+                const { user, token } = getClientAuthInfo(api);
+                await api?.request?.({
+                  url: 'onlineCount:heartbeat',
+                  method: 'POST',
+                  data: {
+                    userId: user?.id,
+                    username: user?.username || user?.email,
+                    nickname: user?.nickname || user?.username,
+                    token,
+                    currentPath: typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/',
+                  },
+                });
+              } catch {}
               fetchStats();
               if (activeTab === 'sessions') fetchSessions();
               if (activeTab === 'audit-logs') fetchAuditLogs();
