@@ -38,6 +38,7 @@ import {
   TeamOutlined,
   GlobalOutlined,
   SafetyCertificateOutlined,
+  LinkOutlined,
 } from '@ant-design/icons';
 import { OnlineTrendChart } from './OnlineTrendChart';
 
@@ -283,15 +284,55 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       title: '当前访问页面',
       dataIndex: 'currentPath',
       key: 'currentPath',
-      width: 180,
+      width: 220,
       ellipsis: true,
-      render: (path: string) => (
-        <Tooltip title={path}>
-          <code style={{ background: '#f5f5f5', padding: '2px 6px', borderRadius: 4, fontSize: 11 }}>
-            {path || '/'}
-          </code>
-        </Tooltip>
-      ),
+      render: (path: string) => {
+        const targetPath = path || '/';
+        return (
+          <Tooltip title={`点击在新窗口打开此页面：${targetPath}`}>
+            <a
+              href={targetPath}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                maxWidth: '100%',
+                background: '#f0f5ff',
+                color: '#1677ff',
+                border: '1px solid #adc6ff',
+                padding: '2px 8px',
+                borderRadius: 4,
+                fontSize: 12,
+                textDecoration: 'none',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = '#d6e4ff';
+                e.currentTarget.style.borderColor = '#85a5ff';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = '#f0f5ff';
+                e.currentTarget.style.borderColor = '#adc6ff';
+              }}
+            >
+              <span
+                style={{
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  fontFamily: 'monospace',
+                }}
+              >
+                {targetPath}
+              </span>
+              <LinkOutlined style={{ fontSize: 11, flexShrink: 0 }} />
+            </a>
+          </Tooltip>
+        );
+      },
     },
     {
       title: '活跃状态',
