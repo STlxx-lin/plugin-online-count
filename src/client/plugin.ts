@@ -2,6 +2,7 @@ import React from 'react';
 import { Plugin } from '@nocobase/client';
 import { OnlineCountPage } from './pages/OnlineCountPage';
 import { useAPIClient as useV1APIClient } from './hooks/useAPIClient';
+import { GlobalHeartbeatProvider } from './providers/GlobalHeartbeatProvider';
 
 const V1OnlineCountPageWrapper: React.FC = () => {
   const api = useV1APIClient();
@@ -10,6 +11,8 @@ const V1OnlineCountPageWrapper: React.FC = () => {
 
 export class PluginOnlineCountClient extends Plugin {
   async load() {
+    this.app.addProvider(GlobalHeartbeatProvider);
+
     const manager = this.app?.pluginSettingsManager as any;
     if (!manager) return;
 

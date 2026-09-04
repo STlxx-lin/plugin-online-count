@@ -102,13 +102,34 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
         url: 'onlineCount:listSessions',
         params: { page: p, pageSize: ps, keyword: kw, device: dev },
       });
-      const data = res?.data?.data || res?.data;
-      if (data) {
-        setSessions(data.rows || []);
-        setTotalCount(data.count || 0);
+      const raw = res?.data;
+      let rows: any[] = [];
+      let count = 0;
+
+      if (Array.isArray(raw)) {
+        rows = raw;
+        count = raw.length;
+      } else if (Array.isArray(raw?.data)) {
+        rows = raw.data;
+        count = raw?.meta?.count ?? raw?.count ?? raw.data.length;
+      } else if (raw?.data && typeof raw.data === 'object' && Array.isArray(raw.data.rows)) {
+        rows = raw.data.rows;
+        count = raw.data.count ?? raw.data.rows.length;
+      } else if (raw && typeof raw === 'object') {
+        if (Array.isArray(raw.rows)) {
+          rows = raw.rows;
+          count = raw.count ?? raw.rows.length;
+        } else if (Array.isArray(raw.items)) {
+          rows = raw.items;
+          count = raw.total ?? raw.items.length;
+        }
       }
-    } catch {}
-    finally {
+
+      setSessions(rows);
+      setTotalCount(count);
+    } catch (err) {
+      console.error('[OnlineCount] fetchSessions error:', err);
+    } finally {
       setSessionsLoading(false);
     }
   };

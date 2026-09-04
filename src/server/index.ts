@@ -62,6 +62,21 @@ export class PluginOnlineCountServer extends Plugin {
       ),
     );
 
+    // 4. 注册 ACL 权限片段与访问控制
+    this.app.acl.registerSnippet({
+      name: `pm.${this.name}.onlineCount`,
+      actions: ['onlineCount:*', 'online_sessions:*', 'online_history_stats:*', 'online_configs:*'],
+    });
+
+    // 心跳上报允许公开/访客调用
+    this.app.acl.allow('onlineCount', 'heartbeat', 'public');
+    // 看板统计、会话列表及配置允许已登录用户或管理员访问
+    this.app.acl.allow(
+      'onlineCount',
+      ['getStats', 'listSessions', 'kickout', 'getTrend', 'getConfigs', 'updateConfigs'],
+      'loggedIn',
+    );
+
     await this.trackerService.init();
     this.app.logger.info('[OnlineCountPlugin] Online Count & Session Management loaded.');
   }

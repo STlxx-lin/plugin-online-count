@@ -172,14 +172,16 @@ export class OnlineTrackerService {
 
     for (const session of this.memorySessions.values()) {
       if (session.isKicked) continue;
-      if (now - session.lastActiveAt.getTime() <= thresholdSec * 1000) {
+      const lastActiveTime = new Date(session.lastActiveAt).getTime();
+      const loginTime = new Date(session.loginAt).getTime();
+      if (now - lastActiveTime <= thresholdSec * 1000) {
         totalOnline++;
         if (session.userId) {
           userOnline++;
         } else {
           guestOnline++;
         }
-        totalDurationMs += now - session.loginAt.getTime();
+        totalDurationMs += now - loginTime;
       }
     }
 
@@ -241,8 +243,9 @@ export class OnlineTrackerService {
 
     for (const session of this.memorySessions.values()) {
       if (session.isKicked) continue;
+      const lastActiveTime = new Date(session.lastActiveAt).getTime();
       // 过滤超时离线的
-      if (now - session.lastActiveAt.getTime() > thresholdSec * 1000) continue;
+      if (now - lastActiveTime > thresholdSec * 1000) continue;
 
       // 关键词过滤
       if (kw) {
@@ -260,14 +263,14 @@ export class OnlineTrackerService {
     }
 
     // 按最后活跃时间降序排序
-    activeList.sort((a, b) => b.lastActiveAt.getTime() - a.lastActiveAt.getTime());
+    activeList.sort((a, b) => new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime());
 
     const total = activeList.length;
     const start = (page - 1) * pageSize;
     const rows = activeList.slice(start, start + pageSize).map((s) => ({
       ...s,
-      durationMinutes: Math.max(1, Math.round((now - s.loginAt.getTime()) / 60000)),
-      idleSeconds: Math.round((now - s.lastActiveAt.getTime()) / 1000),
+      durationMinutes: Math.max(1, Math.round((now - new Date(s.loginAt).getTime()) / 60000)),
+      idleSeconds: Math.max(0, Math.round((now - new Date(s.lastActiveAt).getTime()) / 1000)),
     }));
 
     return {
@@ -371,7 +374,8 @@ export class OnlineTrackerService {
     const expiredTokens: string[] = [];
 
     for (const [token, session] of this.memorySessions.entries()) {
-      if (now - session.lastActiveAt.getTime() > thresholdSec * 1000 * 2) {
+      const lastActiveTime = new Date(session.lastActiveAt).getTime();
+      if (now - lastActiveTime > thresholdSec * 1000 * 2) {
         expiredTokens.push(token);
       }
     }
