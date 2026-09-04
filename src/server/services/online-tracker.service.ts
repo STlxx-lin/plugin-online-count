@@ -130,6 +130,24 @@ export class OnlineTrackerService {
     const now = new Date();
     const { browser, os, device } = parseUserAgent(userAgent);
 
+    // 同设备旧会话与登录前访客会话自动接替淘汰
+    if (userId) {
+      for (const [otherToken, s] of this.memorySessions.entries()) {
+        if (otherToken !== token && !s.isKicked) {
+          // 同一用户在相同 IP 和终端类型下，旧 token 视为已被新会话接替，自动清理
+          const isSameUserDevice = String(s.userId) === String(userId) && s.ip === ip && s.device === device;
+          if (isSameUserDevice) {
+            this.memorySessions.delete(otherToken);
+          }
+          // 同一 IP 下的未登录访客（如 /signin 登录页），在认证用户上线后自动合并清理
+          const isGuestOnSameIp = !s.userId && s.ip === ip;
+          if (isGuestOnSameIp) {
+            this.memorySessions.delete(otherToken);
+          }
+        }
+      }
+    }
+
     let session = this.memorySessions.get(token);
     if (!session) {
       session = {
@@ -189,27 +207,37 @@ export class OnlineTrackerService {
     const thresholdSec = this.configService.getNumber(CONFIG_KEYS.OFFLINE_THRESHOLD, 90);
     const now = Date.now();
 
-    let totalOnline = 0;
-    let userOnline = 0;
-    let guestOnline = 0;
+    const activeUsers = new Set<string>();
+    const activeGuestIps = new Set<string>();
+    const userIps = new Set<string>();
     let totalDurationMs = 0;
+    let validSessionCount = 0;
 
     for (const session of this.memorySessions.values()) {
       if (session.isKicked) continue;
       const lastActiveTime = new Date(session.lastActiveAt).getTime();
       const loginTime = new Date(session.loginAt).getTime();
       if (now - lastActiveTime <= thresholdSec * 1000) {
-        totalOnline++;
         if (session.userId) {
-          userOnline++;
+          activeUsers.add(String(session.userId));
+          if (session.ip) userIps.add(session.ip);
         } else {
-          guestOnline++;
+          if (session.ip) activeGuestIps.add(session.ip);
         }
         totalDurationMs += now - loginTime;
+        validSessionCount++;
       }
     }
 
-    const avgDurationMinutes = totalOnline > 0 ? Math.round(totalDurationMs / totalOnline / 60000) : 0;
+    // 已登录的 IP 自动从访客集合剔除（同一自然人登录前后的接替）
+    for (const uip of userIps) {
+      activeGuestIps.delete(uip);
+    }
+
+    const userOnline = activeUsers.size;
+    const guestOnline = activeGuestIps.size;
+    const totalOnline = userOnline + guestOnline;
+    const avgDurationMinutes = validSessionCount > 0 ? Math.round(totalDurationMs / validSessionCount / 60000) : 0;
 
     // 获取今日最高在线人数（结合历史采样与当前实时）
     let todayPeak = totalOnline;
@@ -267,13 +295,42 @@ export class OnlineTrackerService {
     const rawDev = params.device;
     const filterDev = (rawDev && rawDev !== 'undefined' && rawDev !== 'null') ? String(rawDev).trim() : '';
 
-    const activeList: any[] = [];
+    // 1. 收集当前有效的认证用户 IP 集合
+    const authenticatedIps = new Set<string>();
+    for (const s of this.memorySessions.values()) {
+      if (s.isKicked) continue;
+      const lastActive = new Date(s.lastActiveAt).getTime();
+      if (now - lastActive <= thresholdSec * 1000 && s.userId && s.ip) {
+        authenticatedIps.add(s.ip);
+      }
+    }
+
+    // 2. 按用户/访客与终端维度去重，只保留最新活跃的一条
+    const dedupMap = new Map<string, any>();
     for (const session of this.memorySessions.values()) {
       if (session.isKicked) continue;
       const lastActiveTime = new Date(session.lastActiveAt).getTime();
       // 过滤超时离线的
       if (now - lastActiveTime > thresholdSec * 1000) continue;
 
+      // 如果是匿名访客，且该 IP 已经存在认证用户在线，说明是登录前残留，自动合并排除
+      if (!session.userId && session.ip && authenticatedIps.has(session.ip)) {
+        continue;
+      }
+
+      // 同一用户在相同 IP 和终端类型下，只保留最后活跃时间最新的一条会话
+      const dedupKey = session.userId
+        ? `user_${session.userId}_${session.ip || ''}_${session.device || ''}`
+        : `guest_${session.ip || ''}_${session.device || ''}`;
+
+      const existing = dedupMap.get(dedupKey);
+      if (!existing || new Date(session.lastActiveAt).getTime() > new Date(existing.lastActiveAt).getTime()) {
+        dedupMap.set(dedupKey, session);
+      }
+    }
+
+    const activeList: any[] = [];
+    for (const session of dedupMap.values()) {
       // 关键词过滤
       if (kw) {
         const matchName = String(session.username || '').toLowerCase().includes(kw);
