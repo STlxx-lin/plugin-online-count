@@ -157,24 +157,12 @@ jobs:
       - name: Build & Package Plugin
         run: |
           yarn nocobase build @nocobase/plugin-online-count
+          yarn nocobase tar @nocobase/plugin-online-count
+          
+          # 复制由 NocoBase 官方内置打包器生成的标准规范 tgz 安装包
+          cp storage/tar/@nocobase/plugin-online-count-*.tgz "/tmp/release-artifacts/plugin-online-count-v${RELEASE_VERSION}.tgz"
           
           cd packages/plugins/@nocobase/plugin-online-count
-          
-          # 校验核心产物是否存在
-          echo "=== Verifying Build Artifacts ==="
-          test -f "server.js" || { echo "ERROR: server.js is missing!"; exit 1; }
-          test -f "client.js" || { echo "ERROR: client.js is missing!"; exit 1; }
-          test -d "dist" || { echo "ERROR: dist directory not found!"; exit 1; }
-          (test -f "dist/index.js" || test -f "dist/server/index.js") || { echo "ERROR: server build index.js is missing!"; exit 1; }
-          test -f "dist/client/index.js" || { echo "ERROR: dist/client/index.js is missing!"; exit 1; }
-          
-          echo "=== Package Files List ==="
-          ls -la
-          
-          # 打包发布产物 tgz 与 zip（显式指定包含根入口文件及完整 dist 目录，确保内置依赖与入口完整包含）
-          tar -czvf "/tmp/release-artifacts/plugin-online-count-v${RELEASE_VERSION}.tgz" \
-            package.json README.md server.js server.d.ts client.js client.d.ts client-v2.js client-v2.d.ts dist
-            
           zip -r "/tmp/release-artifacts/plugin-online-count-v${RELEASE_VERSION}.zip" \
             package.json README.md server.js server.d.ts client.js client.d.ts client-v2.js client-v2.d.ts dist
 
