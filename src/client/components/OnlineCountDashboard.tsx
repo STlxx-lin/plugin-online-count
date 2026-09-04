@@ -337,7 +337,11 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       const list = Array.isArray(resData) ? resData : (resData.readUsers || []);
       setCurrentReaders(list);
     } catch (err: any) {
-      message.error('获取已读人员明细失败：' + (err.message || '网络异常'));
+      if (err?.message === 'Network Error') {
+        message.warning('服务正处在重载更新中，请刷新页面重试');
+      } else {
+        message.error('获取已读人员明细失败：' + (err.message || '网络异常'));
+      }
     } finally {
       setReadersLoading(false);
     }
