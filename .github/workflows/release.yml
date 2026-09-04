@@ -47,6 +47,10 @@ jobs:
               "@nocobase/devtools": "2.2.0-beta.15"
             },
             "resolutions": {
+              "@umijs/bundler-webpack": "4.7.13",
+              "@umijs/preset-umi": "4.7.13",
+              "@umijs/renderer-react": "4.7.13",
+              "@umijs/utils": "4.7.13",
               "cytoscape": "3.28.0",
               "@types/react": "18.3.18",
               "@types/react-dom": "^18.0.0",
