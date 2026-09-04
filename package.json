@@ -6,7 +6,7 @@
   "description.zh-CN": "实时在线人数监控、在线用户与活跃会话管理、多端并发登录管控、一键强制下线及历史在线趋势分析。",
   "homepage": "https://github.com/STlxx-lin/plugin-online-count",
   "homepage.zh-CN": "https://github.com/STlxx-lin/plugin-online-count",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "main": "server.js",
   "client": "client.js",
   "files": [

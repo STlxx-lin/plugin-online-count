@@ -114,8 +114,37 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
     }
   };
 
+  // 通用安全解析分页列表数据，全面兼容 NocoBase 的多种响应包装
+  const parsePagedData = (res: any) => {
+    const raw = res?.data;
+    let rows: any[] = [];
+    let count = 0;
+
+    if (Array.isArray(raw?.data)) {
+      rows = raw.data;
+    } else if (Array.isArray(raw?.rows)) {
+      rows = raw.rows;
+    } else if (Array.isArray(raw?.data?.rows)) {
+      rows = raw.data.rows;
+    } else if (Array.isArray(raw)) {
+      rows = raw;
+    }
+
+    if (typeof raw?.meta?.count === 'number') {
+      count = raw.meta.count;
+    } else if (typeof raw?.count === 'number') {
+      count = raw.count;
+    } else if (typeof raw?.data?.count === 'number') {
+      count = raw.data.count;
+    } else {
+      count = rows.length;
+    }
+
+    return { rows, count };
+  };
+
   // 获取会话列表
-  const fetchSessions = async (p = page, ps = pageSize, kw = keyword, dev = deviceFilter) => {
+  const fetchSessions = async (p = page, ps = pageSize, kw = keyword, dev = deviceFilter, isManual = false) => {
     if (!api) return;
     try {
       setSessionsLoading(true);
@@ -130,20 +159,22 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
         url: 'onlineCount:listSessions',
         params: queryParams,
       });
-      const data = res?.data?.data || res?.data;
-      if (data) {
-        setSessions(data.rows || []);
-        setTotalCount(data.count || 0);
-      }
+      const { rows, count } = parsePagedData(res);
+      setSessions(rows);
+      setTotalCount(count);
     } catch (err: any) {
-      message.error('获取在线会话失败：' + (err.message || '网络异常'));
+      console.warn('[OnlineCount] 获取在线会话异常:', err);
+      // 仅在用户手动点击刷新时展示错误弹窗，后台定时轮询或服务重启时保持静默
+      if (isManual) {
+        message.error('获取在线会话失败：' + (err.message || '网络异常'));
+      }
     } finally {
       setSessionsLoading(false);
     }
   };
 
   // 获取会话审计日志
-  const fetchAuditLogs = async (p = auditPage, ps = auditPageSize, un = auditUsername, reason = auditReasonFilter) => {
+  const fetchAuditLogs = async (p = auditPage, ps = auditPageSize, un = auditUsername, reason = auditReasonFilter, isManual = false) => {
     if (!api) return;
     try {
       setAuditLoading(true);
@@ -156,13 +187,14 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
           terminationReason: reason || undefined,
         },
       });
-      const data = res?.data?.data || res?.data;
-      if (data) {
-        setAuditLogs(data.rows || []);
-        setAuditTotal(data.count || 0);
-      }
+      const { rows, count } = parsePagedData(res);
+      setAuditLogs(rows);
+      setAuditTotal(count);
     } catch (err: any) {
-      message.error('获取审计日志失败：' + (err.message || '网络异常'));
+      console.warn('[OnlineCount] 获取审计日志异常:', err);
+      if (isManual) {
+        message.error('获取审计日志失败：' + (err.message || '网络异常'));
+      }
     } finally {
       setAuditLoading(false);
     }
@@ -692,8 +724,8 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
                 });
               } catch {}
               fetchStats();
-              if (activeTab === 'sessions') fetchSessions();
-              if (activeTab === 'audit-logs') fetchAuditLogs();
+              if (activeTab === 'sessions') fetchSessions(page, pageSize, keyword, deviceFilter, true);
+              if (activeTab === 'audit-logs') fetchAuditLogs(auditPage, auditPageSize, auditUsername, auditReasonFilter, true);
               if (activeTab === 'trend') fetchTrend();
             }}
             loading={statsLoading || sessionsLoading || auditLoading}

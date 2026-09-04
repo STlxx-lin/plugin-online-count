@@ -161,7 +161,15 @@ export function createOnlineCountResource(
           keyword: cleanKw,
           device: cleanDev,
         });
-        ctx.body = result;
+        ctx.body = {
+          ...result,
+          data: result.rows,
+          meta: {
+            count: result.count,
+            page: result.page,
+            pageSize: result.pageSize,
+          },
+        };
         await next();
       },
 
@@ -241,7 +249,15 @@ export function createOnlineCountResource(
           username: params.username ? String(params.username) : undefined,
           terminationReason: params.terminationReason ? String(params.terminationReason) : undefined,
         });
-        ctx.body = result;
+        ctx.body = {
+          ...result,
+          data: result.rows,
+          meta: {
+            count: result.count,
+            page: result.page,
+            pageSize: result.pageSize,
+          },
+        };
         await next();
       },
 
