@@ -358,14 +358,16 @@ export class OnlineTrackerService {
       const stats = await this.getOverviewStats();
       const repo = this.app.db.getRepository('online_history_stats');
       if (repo) {
-        await repo.create({
-          values: {
-            totalCount: stats.totalOnline,
-            userCount: stats.userOnline,
-            guestCount: stats.guestOnline,
-            sampleTime: new Date(),
-          },
-        });
+        await repo
+          .create({
+            values: {
+              totalCount: stats.totalOnline,
+              userCount: stats.userOnline,
+              guestCount: stats.guestOnline,
+              sampleTime: new Date(),
+            },
+          })
+          .catch(() => {});
       }
     } catch {}
   }
@@ -389,23 +391,30 @@ export class OnlineTrackerService {
       this.memorySessions.delete(token);
     }
 
-    // 清理数据库中超期较长的记录
-    try {
-      const repo = this.app.db.getRepository('online_sessions');
-      if (repo && expiredTokens.length > 0) {
-        const expireDate = new Date(now - thresholdSec * 1000 * 2);
-        await repo.destroy({
-          filter: {
-            lastActiveAt: {
-              $lt: expireDate,
-            },
-          },
-        });
-      }
-    } catch {}
+    // 清理数据库中超期较长的记录（每 10 分钟最多执行一次，避免频繁操作 SQLite 引发锁定）
+    const nowSec = Math.floor(now / 1000);
+    if (nowSec % 600 < 30) {
+      try {
+        const repo = this.app.db.getRepository('online_sessions');
+        if (repo && expiredTokens.length > 0) {
+          const expireDate = new Date(now - thresholdSec * 1000 * 4);
+          await repo
+            .destroy({
+              filter: {
+                lastActiveAt: {
+                  $lt: expireDate,
+                },
+              },
+            })
+            .catch(() => {});
+        }
+      } catch {}
+    }
 
     // 清理踢出记录黑名单过期项目
-    this.sessionControlService.cleanupExpiredKicks();
+    try {
+      this.sessionControlService.cleanupExpiredKicks();
+    } catch {}
   }
 
   private async loadActiveSessionsFromDb(): Promise<void> {
