@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
+  workflow_dispatch:
 
 jobs:
   build-and-release:
@@ -61,7 +64,7 @@ jobs:
         run: |
           cat << 'EOF' > lerna.json
           {
-            "version": "0.1.0",
+            "version": "0.1.2",
             "npmClient": "yarn",
             "useWorkspaces": true
           }
@@ -122,6 +125,7 @@ jobs:
           touch .env
           touch .env.example
           touch .env.e2e.example
+
       - name: Install Dependencies with Retry
         run: |
           yarn config set network-timeout 600000
@@ -174,12 +178,20 @@ jobs:
           zip -r "/tmp/release-artifacts/plugin-online-count-v${RELEASE_VERSION}.zip" \
             package.json README.md server.js server.d.ts client.js client.d.ts client-v2.js client-v2.d.ts dist
 
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-online-count-v${{ steps.plugin_version.outputs.version }}
+          path: |
+            /tmp/release-artifacts/plugin-online-count-v*.tgz
+            /tmp/release-artifacts/plugin-online-count-v*.zip
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.plugin_version.outputs.version) }}
-          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Release v{0}', steps.plugin_version.outputs.version) }}
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
           generate_release_notes: true
