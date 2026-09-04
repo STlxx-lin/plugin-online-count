@@ -303,12 +303,12 @@ export function createOnlineCountResource(
        */
       revokeBroadcast: async (ctx: Context, next: Next) => {
         const params = getParams(ctx);
-        const { broadcastId } = params;
-        if (!broadcastId) {
+        const targetId = params.broadcastId || params.id;
+        if (!targetId) {
           ctx.throw(400, 'broadcastId is required');
         }
 
-        const success = await broadcastService.revoke(String(broadcastId), ctx.db);
+        const success = await broadcastService.revoke(targetId, ctx.db);
         ctx.body = { success, message: success ? '广播通知已提前撤回' : '撤回失败' };
         await next();
       },
@@ -318,15 +318,23 @@ export function createOnlineCountResource(
        */
       getBroadcastReaders: async (ctx: Context, next: Next) => {
         const params = getParams(ctx);
-        const { broadcastId } = params;
-        if (!broadcastId) {
+        const targetId = params.broadcastId || params.id;
+        if (!targetId) {
           ctx.throw(400, 'broadcastId is required');
         }
 
         const repo = ctx.db.getRepository('online_broadcasts');
-        const record = await repo?.findOne({ filter: { broadcastId } });
+        let record = await repo?.findOne({ filter: { broadcastId: String(targetId) } });
+        if (!record && !isNaN(Number(targetId))) {
+          record = await repo?.findOne({ filterByTk: Number(targetId) });
+        }
+        const readUsers = Array.isArray(record?.readUsers) ? record.readUsers : [];
         ctx.body = {
-          data: Array.isArray(record?.readUsers) ? record.readUsers : [],
+          data: {
+            broadcastId: record?.broadcastId || targetId,
+            title: record?.title,
+            readUsers,
+          },
         };
         await next();
       },

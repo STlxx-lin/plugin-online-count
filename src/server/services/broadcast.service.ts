@@ -165,23 +165,31 @@ export class BroadcastService {
   /**
    * 提前撤回广播
    */
-  async revoke(broadcastId: string, db?: Database): Promise<boolean> {
-    if (!broadcastId) return false;
+  async revoke(targetId: string | number, db?: Database): Promise<boolean> {
+    if (!targetId) return false;
     const database = db || this.db;
+    const idStr = String(targetId);
 
-    // 1. 从内存移除
-    this.messages = this.messages.filter((m) => m.id !== broadcastId);
+    // 1. 从内存初筛
+    this.messages = this.messages.filter((m) => m.id !== idStr);
 
     // 2. 数据库更新为 revoked
     if (database) {
       try {
         const repo = database.getRepository('online_broadcasts');
         if (repo) {
-          await repo.update({
-            filter: { broadcastId },
-            values: { status: 'revoked' },
-          });
-          return true;
+          let record = await repo.findOne({ filter: { broadcastId: idStr } });
+          if (!record && !isNaN(Number(targetId))) {
+            record = await repo.findOne({ filterByTk: Number(targetId) });
+          }
+          if (record) {
+            await repo.update({
+              filterByTk: record.id,
+              values: { status: 'revoked' },
+            });
+            this.messages = this.messages.filter((m) => m.id !== record.broadcastId && m.id !== idStr);
+            return true;
+          }
         }
       } catch (err) {
         console.warn('[BroadcastService] revoke failed:', err);

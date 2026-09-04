@@ -298,13 +298,18 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   };
 
   // 撤回广播
-  const handleRevokeBroadcast = async (broadcastId: string) => {
+  const handleRevokeBroadcast = async (record: any) => {
     if (!api) return;
     try {
+      const broadcastId = typeof record === 'object' ? (record.broadcastId || record.id) : record;
+      const id = typeof record === 'object' ? record.id : undefined;
       await api.request({
         url: 'onlineCount:revokeBroadcast',
         method: 'POST',
-        data: { id: broadcastId },
+        data: {
+          broadcastId,
+          id,
+        },
       });
       message.success('已成功撤回该条广播，客户端将不再展示！');
       fetchBroadcasts();
@@ -320,12 +325,17 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       setReadersLoading(true);
       setSelectedBroadcastTitle(record.title);
       setReadersDrawerOpen(true);
+      const broadcastId = record.broadcastId || record.id;
       const res = await api.request({
         url: 'onlineCount:getBroadcastReaders',
-        params: { id: record.id },
+        params: {
+          broadcastId,
+          id: record.id,
+        },
       });
-      const data = res?.data?.data || res?.data || {};
-      setCurrentReaders(data.readUsers || []);
+      const resData = res?.data?.data || res?.data || {};
+      const list = Array.isArray(resData) ? resData : (resData.readUsers || []);
+      setCurrentReaders(list);
     } catch (err: any) {
       message.error('获取已读人员明细失败：' + (err.message || '网络异常'));
     } finally {
@@ -929,7 +939,7 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
           <Popconfirm
             title="确定要撤回该条广播通知吗？"
             description="撤回后所有客户端将不再展示该条广播，未读用户也不会再收到提示。"
-            onConfirm={() => handleRevokeBroadcast(record.id)}
+            onConfirm={() => handleRevokeBroadcast(record)}
             okText="确认撤回"
             cancelText="取消"
             okButtonProps={{ danger: true }}
