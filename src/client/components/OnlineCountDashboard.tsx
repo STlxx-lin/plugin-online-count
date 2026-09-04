@@ -22,6 +22,7 @@ import {
   Avatar,
   Badge,
   Popconfirm,
+  Drawer,
 } from 'antd';
 import {
   UserOutlined,
@@ -43,11 +44,47 @@ import {
   HistoryOutlined,
   SendOutlined,
   MessageOutlined,
+  StopOutlined,
+  EyeOutlined,
+  BulbOutlined,
+  CheckCircleOutlined,
 } from '@ant-design/icons';
 import { OnlineTrendChart } from './OnlineTrendChart';
 import { useOnlineHeartbeat, getClientAuthInfo } from '../hooks/useOnlineHeartbeat';
 
 const { Text } = Typography;
+
+// 常用预设模板
+const BROADCAST_TEMPLATES: Record<string, { title: string; content: string; type: string; mode: string; ttlMinutes: number }> = {
+  maintenance: {
+    title: '系统例行维护公告',
+    content: '尊敬的用户：平台将于 10 分钟后进行核心服务维护升级，预计耗时 15 分钟。期间请提前保存当前工作内容，以免数据丢失。',
+    type: 'warning',
+    mode: 'modal',
+    ttlMinutes: 20,
+  },
+  release: {
+    title: '新功能版本发布通知',
+    content: '系统已完成最新迭代升级！上线了更强劲的在线协同与管控中心，刷新页面即可体验最新特性。',
+    type: 'info',
+    mode: 'notification',
+    ttlMinutes: 60,
+  },
+  security: {
+    title: '安全协同与登出预警',
+    content: '系统检测到敏感环境安全策略调整，请所有在线成员核验当前账号安全，并在完成任务后按规范注销登出。',
+    type: 'error',
+    mode: 'modal',
+    ttlMinutes: 15,
+  },
+  meeting: {
+    title: '全员在线协同提醒',
+    content: '各位同事：下午 15:00 的跨部门线上协同评审即将准时开始，请提前进入相应会议空间。',
+    type: 'info',
+    mode: 'notification',
+    ttlMinutes: 30,
+  },
+};
 
 export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   useOnlineHeartbeat(api);
@@ -95,7 +132,24 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   const [configsLoading, setConfigsLoading] = useState(false);
   const [savingConfigs, setSavingConfigs] = useState(false);
 
-  // 广播通知弹窗
+  // 广播通知管理与历史数据
+  const [broadcastList, setBroadcastList] = useState<any[]>([]);
+  const [broadcastTotal, setBroadcastTotal] = useState(0);
+  const [broadcastPage, setBroadcastPage] = useState(1);
+  const [broadcastPageSize, setBroadcastPageSize] = useState(10);
+  const [broadcastStatusFilter, setBroadcastStatusFilter] = useState('');
+  const [broadcastLoading, setBroadcastLoading] = useState(false);
+
+  // 在线认证用户下拉列表
+  const [onlineUserOptions, setOnlineUserOptions] = useState<{ label: string; value: string; userId: any }[]>([]);
+
+  // 广播阅读人员明细抽屉
+  const [readersDrawerOpen, setReadersDrawerOpen] = useState(false);
+  const [currentReaders, setCurrentReaders] = useState<any[]>([]);
+  const [selectedBroadcastTitle, setSelectedBroadcastTitle] = useState('');
+  const [readersLoading, setReadersLoading] = useState(false);
+
+  // 发送广播弹窗
   const [broadcastModalOpen, setBroadcastModalOpen] = useState(false);
   const [broadcastForm] = Form.useForm();
   const [sendingBroadcast, setSendingBroadcast] = useState(false);
@@ -118,26 +172,6 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
         window.location.href = '/signin';
       },
     });
-  };
-
-  // 获取指标概览
-  const fetchStats = async () => {
-    if (!api) return;
-    try {
-      setStatsLoading(true);
-      const res = await api.request({ url: 'onlineCount:getStats' });
-      const data = res?.data?.data || res?.data;
-      if (data) setStats(data);
-    } catch (err: any) {
-      if (err?.response?.status === 401) {
-        const errData = err.response.data;
-        if (errData?.kicked || errData?.code === 'SESSION_KICKED_OUT') {
-          handleLogoutAndRedirect(errData.message);
-        }
-      }
-    } finally {
-      setStatsLoading(false);
-    }
   };
 
   // 通用安全解析分页列表数据，全面兼容 NocoBase 的多种响应包装
@@ -169,15 +203,32 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
     return { rows, count };
   };
 
+  // 获取指标概览
+  const fetchStats = async () => {
+    if (!api) return;
+    try {
+      setStatsLoading(true);
+      const res = await api.request({ url: 'onlineCount:getStats' });
+      const data = res?.data?.data || res?.data;
+      if (data) setStats(data);
+    } catch (err: any) {
+      if (err?.response?.status === 401) {
+        const errData = err.response.data;
+        if (errData?.kicked || errData?.code === 'SESSION_KICKED_OUT') {
+          handleLogoutAndRedirect(errData.message);
+        }
+      }
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
   // 获取会话列表
   const fetchSessions = async (p = page, ps = pageSize, kw = keyword, dev = deviceFilter, isManual = false) => {
     if (!api) return;
     try {
       setSessionsLoading(true);
-      const queryParams: any = {
-        page: p,
-        pageSize: ps,
-      };
+      const queryParams: any = { page: p, pageSize: ps };
       if (kw && String(kw).trim()) queryParams.keyword = String(kw).trim();
       if (dev && String(dev).trim()) queryParams.device = String(dev).trim();
 
@@ -197,12 +248,88 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
           return;
         }
       }
-      // 仅在用户手动点击刷新时展示错误弹窗，后台定时轮询或服务重启时保持静默
       if (isManual) {
         message.error('获取在线会话失败：' + (err.message || '网络异常'));
       }
     } finally {
       setSessionsLoading(false);
+    }
+  };
+
+  // 获取在线认证用户选项
+  const fetchOnlineUsersList = async () => {
+    if (!api) return;
+    try {
+      const res = await api.request({ url: 'onlineCount:getOnlineUsersList' });
+      const list = res?.data?.data || res?.data || [];
+      const opts = list.map((u: any) => ({
+        label: `${u.nickname || u.username} (@${u.username})`,
+        value: String(u.username),
+        userId: u.userId,
+      }));
+      setOnlineUserOptions(opts);
+    } catch {}
+  };
+
+  // 获取广播历史列表
+  const fetchBroadcasts = async (p = broadcastPage, ps = broadcastPageSize, status = broadcastStatusFilter, isManual = false) => {
+    if (!api) return;
+    try {
+      setBroadcastLoading(true);
+      const res = await api.request({
+        url: 'onlineCount:listBroadcasts',
+        params: {
+          page: p,
+          pageSize: ps,
+          status: status || undefined,
+        },
+      });
+      const { rows, count } = parsePagedData(res);
+      setBroadcastList(rows);
+      setBroadcastTotal(count);
+    } catch (err: any) {
+      console.warn('[OnlineCount] 获取广播历史异常:', err);
+      if (isManual) {
+        message.error('获取广播历史失败：' + (err.message || '网络异常'));
+      }
+    } finally {
+      setBroadcastLoading(false);
+    }
+  };
+
+  // 撤回广播
+  const handleRevokeBroadcast = async (broadcastId: string) => {
+    if (!api) return;
+    try {
+      await api.request({
+        url: 'onlineCount:revokeBroadcast',
+        method: 'POST',
+        data: { id: broadcastId },
+      });
+      message.success('已成功撤回该条广播，客户端将不再展示！');
+      fetchBroadcasts();
+    } catch (err: any) {
+      message.error('撤回失败：' + (err.message || '未知错误'));
+    }
+  };
+
+  // 查看已读人员明细
+  const handleViewReaders = async (record: any) => {
+    if (!api) return;
+    try {
+      setReadersLoading(true);
+      setSelectedBroadcastTitle(record.title);
+      setReadersDrawerOpen(true);
+      const res = await api.request({
+        url: 'onlineCount:getBroadcastReaders',
+        params: { id: record.id },
+      });
+      const data = res?.data?.data || res?.data || {};
+      setCurrentReaders(data.readUsers || []);
+    } catch (err: any) {
+      message.error('获取已读人员明细失败：' + (err.message || '网络异常'));
+    } finally {
+      setReadersLoading(false);
     }
   };
 
@@ -341,10 +468,12 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
 
   // 打开给特定用户的广播弹窗
   const handleOpenDirectMessage = (record: any) => {
+    fetchOnlineUsersList();
     broadcastForm.resetFields();
     broadcastForm.setFieldsValue({
-      title: '系统通知',
+      title: '系统消息提醒',
       scope: record.userId ? 'user' : 'session',
+      targetUsername: record.username || undefined,
       targetUserId: record.userId || undefined,
       targetSessionId: record.token,
       mode: 'modal',
@@ -353,6 +482,20 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       content: `您好，${record.nickname || record.username || '用户'}：`,
     });
     setBroadcastModalOpen(true);
+  };
+
+  // 快速套用模板
+  const handleApplyTemplate = (key: string) => {
+    const tpl = BROADCAST_TEMPLATES[key];
+    if (!tpl) return;
+    broadcastForm.setFieldsValue({
+      title: tpl.title,
+      content: tpl.content,
+      type: tpl.type,
+      mode: tpl.mode,
+      ttlMinutes: tpl.ttlMinutes,
+    });
+    message.info(`已应用【${tpl.title}】预设模板`);
   };
 
   // 提交发送广播
@@ -365,9 +508,12 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
         method: 'POST',
         data: values,
       });
-      message.success('通知已成功发布，目标客户端将在下次心跳时收到提醒！');
+      message.success('广播通知已成功发布，所有目标在线客户端将在心跳时即时送达！');
       setBroadcastModalOpen(false);
       broadcastForm.resetFields();
+      if (activeTab === 'broadcasts') {
+        fetchBroadcasts();
+      }
     } catch (err: any) {
       message.error('发布失败：' + (err.message || '未知错误'));
     } finally {
@@ -399,7 +545,10 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   }, []);
 
   useEffect(() => {
-    if (activeTab === 'trend') {
+    if (activeTab === 'broadcasts') {
+      fetchBroadcasts(1, broadcastPageSize);
+      fetchOnlineUsersList();
+    } else if (activeTab === 'trend') {
       fetchTrend();
     } else if (activeTab === 'settings') {
       fetchConfigs();
@@ -415,10 +564,12 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       if (activeTab === 'sessions') {
         fetchStats();
         fetchSessions();
+      } else if (activeTab === 'broadcasts') {
+        fetchBroadcasts();
       }
     }, 15000);
     return () => clearInterval(timer);
-  }, [autoRefresh, activeTab, page, pageSize, keyword, deviceFilter]);
+  }, [autoRefresh, activeTab, page, pageSize, keyword, deviceFilter, broadcastPage, broadcastPageSize, broadcastStatusFilter]);
 
   // 格式化时长显示
   const formatDuration = (seconds: number) => {
@@ -642,6 +793,162 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
     },
   ];
 
+  // 广播通知表格列配置
+  const broadcastColumns = [
+    {
+      title: '通知标题与内容',
+      key: 'content',
+      width: 280,
+      render: (_: any, record: any) => (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontWeight: 600, fontSize: 13, color: '#1f1f1f' }}>{record.title}</span>
+            {record.type === 'error' && <Tag color="error">紧急</Tag>}
+            {record.type === 'warning' && <Tag color="warning">警告</Tag>}
+            {record.type === 'info' && <Tag color="blue">常规</Tag>}
+            <Tag color="default">{record.mode === 'modal' ? '阻断弹窗' : '气泡浮窗'}</Tag>
+          </div>
+          <Tooltip title={record.content}>
+            <Text type="secondary" ellipsis style={{ maxWidth: 260, fontSize: 12 }}>
+              {record.content}
+            </Text>
+          </Tooltip>
+        </div>
+      ),
+    },
+    {
+      title: '受众目标',
+      key: 'target',
+      width: 150,
+      render: (_: any, record: any) => {
+        if (record.scope === 'all') {
+          return <Tag color="purple">全员在线广播</Tag>;
+        }
+        if (record.scope === 'user') {
+          return (
+            <Space direction="vertical" size={2}>
+              <Tag color="cyan">指定用户</Tag>
+              <span style={{ fontSize: 11, color: '#595959' }}>
+                {record.targetUsername ? `@${record.targetUsername}` : `UID: ${record.targetUserId}`}
+              </span>
+            </Space>
+          );
+        }
+        return (
+          <Space direction="vertical" size={2}>
+            <Tag color="orange">指定会话</Tag>
+            <Tooltip title={record.targetSessionId}>
+              <span style={{ fontSize: 11, color: '#8c8c8c', fontFamily: 'monospace' }}>
+                {record.targetSessionId ? record.targetSessionId.slice(0, 10) + '...' : '-'}
+              </span>
+            </Tooltip>
+          </Space>
+        );
+      },
+    },
+    {
+      title: '阅读情况',
+      key: 'readStatus',
+      width: 140,
+      render: (_: any, record: any) => (
+        <Space size={6} align="center">
+          <Badge
+            count={record.readCount || 0}
+            overflowCount={9999}
+            style={{ backgroundColor: (record.readCount > 0) ? '#52c41a' : '#d9d9d9' }}
+          />
+          <Button
+            size="small"
+            type="link"
+            icon={<EyeOutlined />}
+            style={{ padding: 0, fontSize: 12 }}
+            onClick={() => handleViewReaders(record)}
+          >
+            明细 ({record.readCount || 0}人)
+          </Button>
+        </Space>
+      ),
+    },
+    {
+      title: '发布人',
+      key: 'publisher',
+      width: 120,
+      render: (_: any, record: any) => (
+        <span style={{ fontSize: 12, color: '#595959' }}>
+          {record.createdByUsername || '管理员'}
+        </span>
+      ),
+    },
+    {
+      title: '时间与有效周期',
+      key: 'time',
+      width: 200,
+      render: (_: any, record: any) => {
+        const isExpired = Date.now() > record.expiresAt;
+        const remainSec = Math.max(0, Math.floor((record.expiresAt - Date.now()) / 1000));
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ fontSize: 12 }}>
+              {new Date(record.createdAt).toLocaleTimeString()} 发布
+            </span>
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {isExpired ? (
+                <span style={{ color: '#bfbfbf' }}>已于 {new Date(record.expiresAt).toLocaleTimeString()} 过期</span>
+              ) : (
+                <span style={{ color: '#52c41a' }}>生效中 (剩余 {Math.ceil(remainSec / 60)} 分钟)</span>
+              )}
+            </Text>
+          </div>
+        );
+      },
+    },
+    {
+      title: '当前状态',
+      key: 'status',
+      width: 110,
+      render: (_: any, record: any) => {
+        if (record.isRevoked) {
+          return <Tag color="default">已撤回</Tag>;
+        }
+        if (Date.now() > record.expiresAt) {
+          return <Tag color="gold">已过期</Tag>;
+        }
+        return <Tag color="success">正在生效中</Tag>;
+      },
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 100,
+      render: (_: any, record: any) => {
+        const canRevoke = !record.isRevoked && Date.now() <= record.expiresAt;
+        if (!canRevoke) {
+          return <span style={{ color: '#bfbfbf', fontSize: 12 }}>-</span>;
+        }
+        return (
+          <Popconfirm
+            title="确定要撤回该条广播通知吗？"
+            description="撤回后所有客户端将不再展示该条广播，未读用户也不会再收到提示。"
+            onConfirm={() => handleRevokeBroadcast(record.id)}
+            okText="确认撤回"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+          >
+            <Button
+              size="small"
+              danger
+              icon={<StopOutlined />}
+              type="link"
+              style={{ padding: 0 }}
+            >
+              提前撤回
+            </Button>
+          </Popconfirm>
+        );
+      },
+    },
+  ];
+
   // 审计日志表格列配置
   const auditColumns = [
     {
@@ -718,21 +1025,11 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       key: 'terminationReason',
       width: 160,
       render: (reason: string) => {
-        if (reason === 'kickout') {
-          return <Tag color="error">管理员强制下线</Tag>;
-        }
-        if (reason === 'mutex_kickout') {
-          return <Tag color="warning">单点互斥踢出</Tag>;
-        }
-        if (reason === 'idle_timeout') {
-          return <Tag color="gold">挂机空闲超时</Tag>;
-        }
-        if (reason === 'heartbeat_timeout') {
-          return <Tag color="default">心跳断开超时</Tag>;
-        }
-        if (reason === 'manual_logout') {
-          return <Tag color="blue">主动退出登录</Tag>;
-        }
+        if (reason === 'kickout') return <Tag color="error">管理员强制下线</Tag>;
+        if (reason === 'mutex_kickout') return <Tag color="warning">单点互斥踢出</Tag>;
+        if (reason === 'idle_timeout') return <Tag color="gold">挂机空闲超时</Tag>;
+        if (reason === 'heartbeat_timeout') return <Tag color="default">心跳断开超时</Tag>;
+        if (reason === 'manual_logout') return <Tag color="blue">主动退出登录</Tag>;
         return <Tag color="default">{reason || '离线'}</Tag>;
       },
     },
@@ -768,6 +1065,7 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
             icon={<NotificationOutlined />}
             style={{ background: '#722ed1', borderColor: '#722ed1' }}
             onClick={() => {
+              fetchOnlineUsersList();
               broadcastForm.resetFields();
               broadcastForm.setFieldsValue({
                 title: '系统通知',
@@ -804,10 +1102,11 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
               } catch {}
               fetchStats();
               if (activeTab === 'sessions') fetchSessions(page, pageSize, keyword, deviceFilter, true);
+              if (activeTab === 'broadcasts') fetchBroadcasts(broadcastPage, broadcastPageSize, broadcastStatusFilter, true);
               if (activeTab === 'audit-logs') fetchAuditLogs(auditPage, auditPageSize, auditUsername, auditReasonFilter, true);
               if (activeTab === 'trend') fetchTrend();
             }}
-            loading={statsLoading || sessionsLoading || auditLoading}
+            loading={statsLoading || sessionsLoading || auditLoading || broadcastLoading}
           >
             刷新数据
           </Button>
@@ -963,6 +1262,103 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
                         setPage(p);
                         setPageSize(ps);
                         fetchSessions(p, ps, keyword, deviceFilter);
+                      },
+                    }}
+                  />
+                </div>
+              ),
+            },
+            {
+              key: 'broadcasts',
+              label: (
+                <span>
+                  <NotificationOutlined style={{ marginRight: 6 }} />
+                  广播通知管理 ({broadcastTotal})
+                </span>
+              ),
+              children: (
+                <div>
+                  {/* 广播管理操作栏 */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 16,
+                      background: '#fafafa',
+                      padding: '10px 14px',
+                      borderRadius: 6,
+                    }}
+                  >
+                    <Space size={12}>
+                      <Select
+                        placeholder="按通知状态筛选"
+                        value={broadcastStatusFilter || undefined}
+                        onChange={(val) => {
+                          setBroadcastStatusFilter(val || '');
+                          setBroadcastPage(1);
+                          fetchBroadcasts(1, broadcastPageSize, val || '');
+                        }}
+                        allowClear
+                        style={{ width: 160 }}
+                      >
+                        <Select.Option value="active">正在生效中</Select.Option>
+                        <Select.Option value="revoked">已提前撤回</Select.Option>
+                        <Select.Option value="expired">已自然过期</Select.Option>
+                      </Select>
+
+                      <Button
+                        type="primary"
+                        icon={<SearchOutlined />}
+                        onClick={() => {
+                          setBroadcastPage(1);
+                          fetchBroadcasts(1, broadcastPageSize, broadcastStatusFilter);
+                        }}
+                      >
+                        筛选
+                      </Button>
+                    </Space>
+
+                    <Space size={10}>
+                      <Button
+                        type="primary"
+                        icon={<NotificationOutlined />}
+                        style={{ background: '#722ed1', borderColor: '#722ed1' }}
+                        onClick={() => {
+                          fetchOnlineUsersList();
+                          broadcastForm.resetFields();
+                          broadcastForm.setFieldsValue({
+                            title: '系统通知',
+                            scope: 'all',
+                            mode: 'notification',
+                            type: 'info',
+                            ttlMinutes: 15,
+                          });
+                          setBroadcastModalOpen(true);
+                        }}
+                      >
+                        发布新广播
+                      </Button>
+                      <Button icon={<ReloadOutlined />} onClick={() => fetchBroadcasts()}>
+                        刷新列表
+                      </Button>
+                    </Space>
+                  </div>
+
+                  <Table
+                    columns={broadcastColumns}
+                    dataSource={broadcastList}
+                    rowKey="id"
+                    loading={broadcastLoading}
+                    pagination={{
+                      current: broadcastPage,
+                      pageSize: broadcastPageSize,
+                      total: broadcastTotal,
+                      showTotal: (total) => `共 ${total} 条历史广播记录`,
+                      onChange: (p, ps) => {
+                        setBroadcastPage(p);
+                        setBroadcastPageSize(ps);
+                        fetchBroadcasts(p, ps, broadcastStatusFilter);
                       },
                     }}
                   />
@@ -1173,6 +1569,53 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
         />
       </Card>
 
+      {/* 查看已读人员明细抽屉 */}
+      <Drawer
+        title={`📋「${selectedBroadcastTitle}」已读人员明细`}
+        placement="right"
+        width={420}
+        open={readersDrawerOpen}
+        onClose={() => setReadersDrawerOpen(false)}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <Tag color="success" icon={<CheckCircleOutlined />}>
+            已阅读确认人数：{currentReaders.length} 人
+          </Tag>
+        </div>
+        <Table
+          dataSource={currentReaders}
+          rowKey={(r) => `${r.userId || r.username}_${r.readAt}`}
+          loading={readersLoading}
+          pagination={false}
+          size="small"
+          columns={[
+            {
+              title: '用户',
+              key: 'user',
+              render: (_: any, r: any) => (
+                <Space>
+                  <Avatar size="small" icon={<UserOutlined />} style={{ backgroundColor: '#1677ff' }} />
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ fontSize: 12, fontWeight: 600 }}>{r.nickname || r.username}</span>
+                    <Text type="secondary" style={{ fontSize: 11 }}>@{r.username}</Text>
+                  </div>
+                </Space>
+              ),
+            },
+            {
+              title: '确认时间',
+              dataIndex: 'readAt',
+              key: 'readAt',
+              render: (time: any) => (
+                <span style={{ fontSize: 12, color: '#595959' }}>
+                  {new Date(time).toLocaleTimeString()}
+                </span>
+              ),
+            },
+          ]}
+        />
+      </Drawer>
+
       {/* 发送广播 / 消息弹窗 */}
       <Modal
         title="📢 发布即时通知与广播"
@@ -1180,8 +1623,30 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
         onCancel={() => setBroadcastModalOpen(false)}
         footer={null}
         destroyOnClose
-        width={540}
+        width={580}
       >
+        {/* 快捷模板填充区 */}
+        <div
+          style={{
+            marginBottom: 16,
+            background: '#fafafa',
+            padding: '10px 12px',
+            borderRadius: 6,
+            border: '1px dashed #d9d9d9',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+            <BulbOutlined style={{ color: '#faad14' }} />
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#595959' }}>快捷预设模板（一键填入）：</span>
+          </div>
+          <Space wrap size={[8, 8]}>
+            <Button size="small" onClick={() => handleApplyTemplate('maintenance')}>🛠️ 停机维护</Button>
+            <Button size="small" onClick={() => handleApplyTemplate('release')}>🚀 版本发布</Button>
+            <Button size="small" onClick={() => handleApplyTemplate('security')}>⚠️ 安全排查</Button>
+            <Button size="small" onClick={() => handleApplyTemplate('meeting')}>📅 协同会议</Button>
+          </Space>
+        </div>
+
         <Form
           form={broadcastForm}
           layout="vertical"
@@ -1195,12 +1660,12 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
           }}
         >
           <Form.Item
-            label="通知范围"
+            label="通知受众范围"
             name="scope"
             rules={[{ required: true }]}
           >
             <Radio.Group>
-              <Radio.Button value="all">全员广播 (所有在线用户与访客)</Radio.Button>
+              <Radio.Button value="all">全员广播 (所有在线人员)</Radio.Button>
               <Radio.Button value="user">指定用户</Radio.Button>
               <Radio.Button value="session">指定会话</Radio.Button>
             </Radio.Group>
@@ -1215,11 +1680,21 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
               if (scope === 'user') {
                 return (
                   <Form.Item
-                    label="目标用户 ID"
-                    name="targetUserId"
-                    rules={[{ required: true, message: '请输入目标用户 ID' }]}
+                    label="选择或输入目标用户名"
+                    name="targetUsername"
+                    rules={[{ required: true, message: '请选择或输入目标用户名' }]}
+                    extra="可从当前在线认证人员中直接点选，也可手动输入用户名或 UID。"
                   >
-                    <Input placeholder="例如: 1" />
+                    <Select
+                      showSearch
+                      allowClear
+                      placeholder="点选在线用户或直接输入用户名..."
+                      options={onlineUserOptions}
+                      filterOption={(input, option) =>
+                        (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
+                        (option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+                      }
+                    />
                   </Form.Item>
                 );
               }
@@ -1230,7 +1705,7 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
                     name="targetSessionId"
                     rules={[{ required: true, message: '请输入目标会话 Token' }]}
                   >
-                    <Input placeholder="输入或从表格选中的会话 Token" />
+                    <Input placeholder="输入会话 Token" />
                   </Form.Item>
                 );
               }
@@ -1302,7 +1777,7 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
               loading={sendingBroadcast}
               style={{ background: '#722ed1', borderColor: '#722ed1' }}
             >
-              立即发送
+              立即发布广播
             </Button>
           </div>
         </Form>

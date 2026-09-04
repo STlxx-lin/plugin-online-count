@@ -1,19 +1,35 @@
+import type { Database } from '@nocobase/database';
+import { Op } from 'sequelize';
+
+export interface ReadUserItem {
+  userId?: number | null;
+  username?: string | null;
+  nickname?: string | null;
+  ip?: string | null;
+  readAt: string;
+}
+
 export interface BroadcastMessage {
-  id: string;
+  id: string; // broadcastId
   title: string;
   content: string;
   mode: 'modal' | 'notification';
   scope: 'all' | 'user' | 'session';
   targetUserId?: number | null;
+  targetUsername?: string | null;
   targetSessionId?: string | null;
   type?: 'info' | 'warning' | 'error' | 'success';
+  status?: 'active' | 'revoked' | 'expired';
   createdAt: number;
   expiresAt: number;
+  readCount?: number;
+  readUsers?: ReadUserItem[];
 }
 
 export class BroadcastService {
   private static instance: BroadcastService;
   private messages: BroadcastMessage[] = [];
+  private db?: Database;
 
   public static getInstance(): BroadcastService {
     if (!BroadcastService.instance) {
@@ -22,48 +38,236 @@ export class BroadcastService {
     return BroadcastService.instance;
   }
 
+  public setDb(db: Database) {
+    this.db = db;
+    this.loadFromDb();
+  }
+
   /**
-   * 发布广播消息
+   * 服务启动时从数据库加载未过期且未撤回的广播
    */
-  publish(params: {
-    title: string;
-    content: string;
-    mode?: 'modal' | 'notification';
-    scope?: 'all' | 'user' | 'session';
-    targetUserId?: number | null;
-    targetSessionId?: string | null;
-    type?: 'info' | 'warning' | 'error' | 'success';
-    ttlMinutes?: number;
-  }): BroadcastMessage {
+  public async loadFromDb() {
+    if (!this.db) return;
+    try {
+      const repo = this.db.getRepository('online_broadcasts');
+      if (!repo) return;
+      const now = new Date();
+      const records = await repo.find({
+        filter: {
+          status: 'active',
+          expiresAt: {
+            $gt: now,
+          },
+        },
+      });
+
+      this.messages = records.map((r: any) => ({
+        id: r.broadcastId,
+        title: r.title,
+        content: r.content,
+        mode: r.mode || 'notification',
+        scope: r.scope || 'all',
+        targetUserId: r.targetUserId ? Number(r.targetUserId) : null,
+        targetUsername: r.targetUsername || null,
+        targetSessionId: r.targetSessionId || null,
+        type: r.type || 'info',
+        status: r.status || 'active',
+        createdAt: new Date(r.createdAt).getTime(),
+        expiresAt: new Date(r.expiresAt).getTime(),
+        readCount: r.readCount || 0,
+        readUsers: Array.isArray(r.readUsers) ? r.readUsers : [],
+      }));
+    } catch (err) {
+      console.warn('[BroadcastService] loadFromDb failed:', err);
+    }
+  }
+
+  /**
+   * 发布即时广播并持久化
+   */
+  async publish(
+    params: {
+      title: string;
+      content: string;
+      mode?: 'modal' | 'notification';
+      scope?: 'all' | 'user' | 'session';
+      targetUserId?: number | null;
+      targetUsername?: string | null;
+      targetSessionId?: string | null;
+      type?: 'info' | 'warning' | 'error' | 'success';
+      ttlMinutes?: number;
+    },
+    db?: Database
+  ): Promise<BroadcastMessage> {
+    const database = db || this.db;
     const now = Date.now();
     const ttlMinutes = params.ttlMinutes && params.ttlMinutes > 0 ? params.ttlMinutes : 15;
+    const expiresAt = now + ttlMinutes * 60 * 1000;
+    const broadcastId = `bc_${now}_${Math.random().toString(36).substring(2, 8)}`;
+
     const msg: BroadcastMessage = {
-      id: `bc_${now}_${Math.random().toString(36).substring(2, 8)}`,
-      title: params.title || '系统广播',
+      id: broadcastId,
+      title: params.title || '系统通知',
       content: params.content,
       mode: params.mode || 'notification',
       scope: params.scope || 'all',
       targetUserId: params.targetUserId ? Number(params.targetUserId) : null,
+      targetUsername: params.targetUsername || null,
       targetSessionId: params.targetSessionId || null,
       type: params.type || 'info',
+      status: 'active',
       createdAt: now,
-      expiresAt: now + ttlMinutes * 60 * 1000,
+      expiresAt,
+      readCount: 0,
+      readUsers: [],
     };
 
-    // 清理过期消息
+    // 内存快速池
     this.cleanExpired();
     this.messages.push(msg);
-
-    // 内存消息最多保留 100 条
     if (this.messages.length > 100) {
       this.messages = this.messages.slice(-100);
+    }
+
+    // 数据库持久化
+    if (database) {
+      try {
+        const repo = database.getRepository('online_broadcasts');
+        if (repo) {
+          await repo.create({
+            values: {
+              broadcastId: msg.id,
+              title: msg.title,
+              content: msg.content,
+              mode: msg.mode,
+              scope: msg.scope,
+              type: msg.type,
+              targetUserId: msg.targetUserId,
+              targetUsername: msg.targetUsername,
+              targetSessionId: msg.targetSessionId,
+              status: 'active',
+              expiresAt: new Date(expiresAt),
+              readCount: 0,
+              readUsers: [],
+              createdAt: new Date(now),
+              updatedAt: new Date(now),
+            },
+          });
+        }
+      } catch (err) {
+        console.warn('[BroadcastService] persist to DB failed:', err);
+      }
     }
 
     return msg;
   }
 
   /**
-   * 为指定会话拉取适用的未过期广播消息
+   * 提前撤回广播
+   */
+  async revoke(broadcastId: string, db?: Database): Promise<boolean> {
+    if (!broadcastId) return false;
+    const database = db || this.db;
+
+    // 1. 从内存移除
+    this.messages = this.messages.filter((m) => m.id !== broadcastId);
+
+    // 2. 数据库更新为 revoked
+    if (database) {
+      try {
+        const repo = database.getRepository('online_broadcasts');
+        if (repo) {
+          await repo.update({
+            filter: { broadcastId },
+            values: { status: 'revoked' },
+          });
+          return true;
+        }
+      } catch (err) {
+        console.warn('[BroadcastService] revoke failed:', err);
+      }
+    }
+    return true;
+  }
+
+  /**
+   * 客户端已读回执追踪
+   */
+  async recordRead(
+    messageIds: string[],
+    clientInfo: {
+      userId?: number | null;
+      username?: string | null;
+      nickname?: string | null;
+      ip?: string | null;
+      sessionId?: string | null;
+    },
+    db?: Database
+  ): Promise<void> {
+    if (!messageIds || messageIds.length === 0) return;
+    const database = db || this.db;
+    const nowStr = new Date().toISOString();
+
+    for (const id of messageIds) {
+      // 更新内存
+      const memMsg = this.messages.find((m) => m.id === id);
+      if (memMsg) {
+        if (!memMsg.readUsers) memMsg.readUsers = [];
+        const already = memMsg.readUsers.some(
+          (u) =>
+            (clientInfo.userId && u.userId === clientInfo.userId) ||
+            (clientInfo.sessionId && u.ip === clientInfo.ip)
+        );
+        if (!already) {
+          memMsg.readUsers.push({
+            userId: clientInfo.userId || null,
+            username: clientInfo.username || (clientInfo.userId ? `User #${clientInfo.userId}` : '访客'),
+            nickname: clientInfo.nickname || clientInfo.username || '访客',
+            ip: clientInfo.ip || null,
+            readAt: nowStr,
+          });
+          memMsg.readCount = memMsg.readUsers.length;
+        }
+      }
+
+      // 更新数据库
+      if (database) {
+        try {
+          const repo = database.getRepository('online_broadcasts');
+          if (repo) {
+            const record = await repo.findOne({ filter: { broadcastId: id } });
+            if (record) {
+              const readUsers = Array.isArray(record.readUsers) ? [...record.readUsers] : [];
+              const already = readUsers.some(
+                (u: any) =>
+                  (clientInfo.userId && u.userId === clientInfo.userId) ||
+                  (clientInfo.sessionId && u.ip === clientInfo.ip)
+              );
+              if (!already) {
+                readUsers.push({
+                  userId: clientInfo.userId || null,
+                  username: clientInfo.username || (clientInfo.userId ? `User #${clientInfo.userId}` : '访客'),
+                  nickname: clientInfo.nickname || clientInfo.username || '访客',
+                  ip: clientInfo.ip || null,
+                  readAt: nowStr,
+                });
+                await repo.update({
+                  filterByTk: record.id,
+                  values: {
+                    readCount: readUsers.length,
+                    readUsers,
+                  },
+                });
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+  }
+
+  /**
+   * 为指定会话拉取未过期广播
    */
   getPendingForClient(params: {
     sessionId: string;
@@ -74,27 +278,103 @@ export class BroadcastService {
     const seenSet = new Set(params.seenMessageIds || []);
 
     return this.messages.filter((msg) => {
-      // 检查是否过期
+      if (msg.status && msg.status !== 'active') return false;
       if (msg.expiresAt < now) return false;
-
-      // 检查是否已消费过
       if (seenSet.has(msg.id)) return false;
 
-      // 全员广播
       if (msg.scope === 'all') return true;
-
-      // 定向用户广播
       if (msg.scope === 'user' && params.userId && msg.targetUserId === params.userId) {
         return true;
       }
-
-      // 定向会话广播
       if (msg.scope === 'session' && params.sessionId && msg.targetSessionId === params.sessionId) {
         return true;
       }
-
       return false;
     });
+  }
+
+  /**
+   * 分页查询历史广播列表
+   */
+  async listBroadcasts(
+    params: {
+      page?: number;
+      pageSize?: number;
+      status?: string;
+      keyword?: string;
+    },
+    db?: Database
+  ): Promise<{ rows: any[]; count: number; page: number; pageSize: number }> {
+    const database = db || this.db;
+    const page = params.page ? Math.max(1, Number(params.page)) : 1;
+    const pageSize = params.pageSize ? Math.max(1, Number(params.pageSize)) : 10;
+    const now = new Date();
+
+    if (!database) {
+      return { rows: [], count: 0, page, pageSize };
+    }
+
+    try {
+      const repo = database.getRepository('online_broadcasts');
+      if (!repo) return { rows: [], count: 0, page, pageSize };
+
+      const filter: any = {};
+      const status = params.status;
+      if (status && status !== 'all') {
+        if (status === 'active') {
+          filter.status = 'active';
+          filter.expiresAt = { $gt: now };
+        } else if (status === 'expired') {
+          filter[Op.or] = [{ status: 'expired' }, { status: 'active', expiresAt: { $lte: now } }];
+        } else if (status === 'revoked') {
+          filter.status = 'revoked';
+        }
+      }
+
+      if (params.keyword && String(params.keyword).trim()) {
+        const kw = String(params.keyword).trim();
+        filter[Op.or] = [
+          { title: { [Op.like]: `%${kw}%` } },
+          { content: { [Op.like]: `%${kw}%` } },
+        ];
+      }
+
+      const [records, count] = await repo.findAndCount({
+        filter,
+        sort: ['-createdAt'],
+        offset: (page - 1) * pageSize,
+        limit: pageSize,
+      });
+
+      const rows = records.map((r: any) => {
+        let displayStatus = r.status || 'active';
+        if (displayStatus === 'active' && new Date(r.expiresAt).getTime() <= now.getTime()) {
+          displayStatus = 'expired';
+        }
+        return {
+          id: r.id,
+          broadcastId: r.broadcastId,
+          title: r.title,
+          content: r.content,
+          mode: r.mode,
+          scope: r.scope,
+          type: r.type,
+          targetUserId: r.targetUserId,
+          targetUsername: r.targetUsername,
+          targetSessionId: r.targetSessionId,
+          status: displayStatus,
+          expiresAt: r.expiresAt,
+          readCount: r.readCount || 0,
+          readUsers: Array.isArray(r.readUsers) ? r.readUsers : [],
+          createdAt: r.createdAt,
+        };
+      });
+
+      return { rows, count, page, pageSize };
+    } catch (err) {
+      console.warn('[BroadcastService] listBroadcasts error:', err);
+      return { rows: [], count: 0, page, pageSize };
+    }
   }
 
   /**
@@ -102,6 +382,6 @@ export class BroadcastService {
    */
   private cleanExpired() {
     const now = Date.now();
-    this.messages = this.messages.filter((msg) => msg.expiresAt >= now);
+    this.messages = this.messages.filter((msg) => msg.expiresAt >= now && msg.status === 'active');
   }
 }

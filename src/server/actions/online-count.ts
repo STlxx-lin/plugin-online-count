@@ -125,6 +125,20 @@ export function createOnlineCountResource(
 
         // 检查是否有给当前客户端/用户的即时广播或通知
         const seenMessageIds = Array.isArray(params.seenMessageIds) ? params.seenMessageIds : [];
+        if (seenMessageIds.length > 0) {
+          broadcastService.recordRead(
+            seenMessageIds,
+            {
+              userId: finalUserId,
+              username: finalUsername,
+              nickname: finalNickname,
+              ip,
+              sessionId: token,
+            },
+            ctx.db
+          );
+        }
+
         const pendingBroadcasts = broadcastService.getPendingForClient({
           sessionId: token,
           userId: finalUserId,
@@ -233,23 +247,98 @@ export function createOnlineCountResource(
        */
       sendBroadcast: async (ctx: Context, next: Next) => {
         const params = getParams(ctx);
-        const { title, content, mode, scope, targetUserId, targetSessionId, type, ttlMinutes } = params;
+        const { title, content, mode, scope, targetUserId, targetUsername, targetSessionId, type, ttlMinutes } = params;
         if (!content) {
           ctx.throw(400, 'content is required');
         }
 
-        const msg = broadcastService.publish({
-          title: title || '系统广播',
-          content: String(content),
-          mode: mode || 'notification',
-          scope: scope || 'all',
-          targetUserId: targetUserId ? Number(targetUserId) : null,
-          targetSessionId: targetSessionId || null,
-          type: type || 'info',
-          ttlMinutes: ttlMinutes ? Number(ttlMinutes) : 15,
-        });
+        const msg = await broadcastService.publish(
+          {
+            title: title || '系统通知',
+            content: String(content),
+            mode: mode || 'notification',
+            scope: scope || 'all',
+            targetUserId: targetUserId ? Number(targetUserId) : null,
+            targetUsername: targetUsername || null,
+            targetSessionId: targetSessionId || null,
+            type: type || 'info',
+            ttlMinutes: ttlMinutes ? Number(ttlMinutes) : 15,
+          },
+          ctx.db
+        );
 
         ctx.body = { success: true, message: msg };
+        await next();
+      },
+
+      /**
+       * 分页查询历史广播列表
+       */
+      listBroadcasts: async (ctx: Context, next: Next) => {
+        const params = getParams(ctx);
+        const result = await broadcastService.listBroadcasts(
+          {
+            page: params.page ? Number(params.page) : 1,
+            pageSize: params.pageSize ? Number(params.pageSize) : 10,
+            status: params.status ? String(params.status) : 'all',
+            keyword: params.keyword ? String(params.keyword) : undefined,
+          },
+          ctx.db
+        );
+
+        ctx.body = {
+          ...result,
+          data: result.rows,
+          meta: {
+            count: result.count,
+            page: result.page,
+            pageSize: result.pageSize,
+          },
+        };
+        await next();
+      },
+
+      /**
+       * 提前撤回广播
+       */
+      revokeBroadcast: async (ctx: Context, next: Next) => {
+        const params = getParams(ctx);
+        const { broadcastId } = params;
+        if (!broadcastId) {
+          ctx.throw(400, 'broadcastId is required');
+        }
+
+        const success = await broadcastService.revoke(String(broadcastId), ctx.db);
+        ctx.body = { success, message: success ? '广播通知已提前撤回' : '撤回失败' };
+        await next();
+      },
+
+      /**
+       * 获取广播已读人员明细
+       */
+      getBroadcastReaders: async (ctx: Context, next: Next) => {
+        const params = getParams(ctx);
+        const { broadcastId } = params;
+        if (!broadcastId) {
+          ctx.throw(400, 'broadcastId is required');
+        }
+
+        const repo = ctx.db.getRepository('online_broadcasts');
+        const record = await repo?.findOne({ filter: { broadcastId } });
+        ctx.body = {
+          data: Array.isArray(record?.readUsers) ? record.readUsers : [],
+        };
+        await next();
+      },
+
+      /**
+       * 获取当前在线的所有已认证用户列表（供定向下拉选择）
+       */
+      getOnlineUsersList: async (ctx: Context, next: Next) => {
+        const list = trackerService.getOnlineUsersList();
+        ctx.body = {
+          data: list,
+        };
         await next();
       },
 

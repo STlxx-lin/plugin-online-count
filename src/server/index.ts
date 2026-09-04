@@ -50,6 +50,10 @@ export class PluginOnlineCountServer extends Plugin {
       this.sessionControlService,
     );
 
+    // 绑定 BroadcastService 数据库
+    const { BroadcastService } = await import('./services/broadcast.service');
+    BroadcastService.getInstance().setDb(this.app.db);
+
     // 2. 注册踢出拦截中间件到全局
     this.app.use(createKickoutInterceptor(this.sessionControlService));
 
@@ -65,15 +69,36 @@ export class PluginOnlineCountServer extends Plugin {
     // 4. 注册 ACL 权限片段与访问控制
     this.app.acl.registerSnippet({
       name: `pm.${this.name}.onlineCount`,
-      actions: ['onlineCount:*', 'online_sessions:*', 'online_history_stats:*', 'online_configs:*'],
+      actions: [
+        'onlineCount:*',
+        'online_sessions:*',
+        'online_history_stats:*',
+        'online_configs:*',
+        'online_broadcasts:*',
+        'online_audit_logs:*',
+      ],
     });
 
     // 心跳上报允许公开/访客调用
     this.app.acl.allow('onlineCount', 'heartbeat', 'public');
-    // 看板统计、会话列表及配置允许已登录用户或管理员访问
+    // 看板统计、会话列表、广播管理及配置允许已登录用户或管理员访问
     this.app.acl.allow(
       'onlineCount',
-      ['getStats', 'listSessions', 'kickout', 'getTrend', 'getConfigs', 'updateConfigs'],
+      [
+        'getStats',
+        'listSessions',
+        'kickout',
+        'getTrend',
+        'getConfigs',
+        'updateConfigs',
+        'sendBroadcast',
+        'listBroadcasts',
+        'revokeBroadcast',
+        'getBroadcastReaders',
+        'getOnlineUsersList',
+        'getAuditLogs',
+        'reportIdle',
+      ],
       'loggedIn',
     );
 

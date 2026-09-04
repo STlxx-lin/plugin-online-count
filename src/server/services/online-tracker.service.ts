@@ -366,6 +366,44 @@ export class OnlineTrackerService {
   }
 
   /**
+   * 获取当前在线的所有认证用户列表（供定向广播下拉选择）
+   */
+  getOnlineUsersList(): Array<{
+    userId: number;
+    username: string;
+    nickname: string;
+    ip: string;
+    device: string;
+    token: string;
+    lastActiveAt: Date;
+  }> {
+    const thresholdSec = this.configService.getNumber(CONFIG_KEYS.OFFLINE_THRESHOLD, 90);
+    const now = Date.now();
+    const userMap = new Map<string | number, any>();
+
+    for (const session of this.memorySessions.values()) {
+      if (session.isKicked || !session.userId) continue;
+      const lastActiveTime = new Date(session.lastActiveAt).getTime();
+      if (now - lastActiveTime <= thresholdSec * 1000) {
+        const existing = userMap.get(session.userId);
+        if (!existing || new Date(session.lastActiveAt).getTime() > new Date(existing.lastActiveAt).getTime()) {
+          userMap.set(session.userId, {
+            userId: Number(session.userId),
+            username: session.username,
+            nickname: session.nickname || session.username,
+            ip: session.ip,
+            device: session.device,
+            token: session.token,
+            lastActiveAt: session.lastActiveAt,
+          });
+        }
+      }
+    }
+
+    return Array.from(userMap.values());
+  }
+
+  /**
    * 获取在线趋势走势图数据 (24小时或近7天)
    */
   async getTrendData(range: 'today' | '7days' = 'today'): Promise<{
