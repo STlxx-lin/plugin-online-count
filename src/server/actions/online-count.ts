@@ -108,6 +108,11 @@ export function createOnlineCountResource(
         const finalUsername = currentUser?.username || currentUser?.email || params.username || (finalUserId ? `User_${finalUserId}` : null);
         const finalNickname = currentUser?.nickname || currentUser?.username || params.nickname || finalUsername || null;
 
+        // 如果是有效鉴权合法的超级管理员心跳，自动解除误踢状态，防止自杀式锁死
+        if (currentUser?.id === 1 && resolvedUserId === 1 && token) {
+          sessionControlService.unmarkKicked(token);
+        }
+
         const result = await trackerService.recordHeartbeat({
           token,
           userId: finalUserId,
@@ -209,7 +214,17 @@ export function createOnlineCountResource(
           success = count > 0;
         }
 
-        ctx.body = { success, message: success ? '已成功强制下线' : '操作失败' };
+        let currentReqToken = '';
+        const authHeader = ctx.headers['authorization'] || ctx.headers['Authorization'];
+        if (authHeader && typeof authHeader === 'string') {
+          currentReqToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+        }
+        const isSelf = Boolean(
+          (token && currentReqToken && token === currentReqToken) ||
+          (userId && ctx.state.currentUser?.id && Number(userId) === Number(ctx.state.currentUser.id))
+        );
+
+        ctx.body = { success, isSelf, message: success ? '已成功强制下线' : '操作失败' };
         await next();
       },
 

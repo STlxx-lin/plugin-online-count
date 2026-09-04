@@ -100,6 +100,26 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   const [broadcastForm] = Form.useForm();
   const [sendingBroadcast, setSendingBroadcast] = useState(false);
 
+  // 优雅登出并引导跳转登录页
+  const handleLogoutAndRedirect = (reasonText?: string) => {
+    try {
+      localStorage.removeItem('NOCOBASE_TOKEN');
+      localStorage.removeItem('token');
+      sessionStorage.removeItem('NOCOBASE_TOKEN');
+      sessionStorage.removeItem('token');
+    } catch {}
+    Modal.warning({
+      title: '会话已终止',
+      content: reasonText || '当前登录会话已下线，请重新登录系统。',
+      okText: '重新登录',
+      centered: true,
+      zIndex: 100000,
+      onOk: () => {
+        window.location.href = '/signin';
+      },
+    });
+  };
+
   // 获取指标概览
   const fetchStats = async () => {
     if (!api) return;
@@ -108,8 +128,14 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       const res = await api.request({ url: 'onlineCount:getStats' });
       const data = res?.data?.data || res?.data;
       if (data) setStats(data);
-    } catch {}
-    finally {
+    } catch (err: any) {
+      if (err?.response?.status === 401) {
+        const errData = err.response.data;
+        if (errData?.kicked || errData?.code === 'SESSION_KICKED_OUT') {
+          handleLogoutAndRedirect(errData.message);
+        }
+      }
+    } finally {
       setStatsLoading(false);
     }
   };
@@ -164,6 +190,13 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       setTotalCount(count);
     } catch (err: any) {
       console.warn('[OnlineCount] 获取在线会话异常:', err);
+      if (err?.response?.status === 401) {
+        const errData = err.response.data;
+        if (errData?.kicked || errData?.code === 'SESSION_KICKED_OUT') {
+          handleLogoutAndRedirect(errData.message);
+          return;
+        }
+      }
       // 仅在用户手动点击刷新时展示错误弹窗，后台定时轮询或服务重启时保持静默
       if (isManual) {
         message.error('获取在线会话失败：' + (err.message || '网络异常'));
@@ -192,6 +225,13 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       setAuditTotal(count);
     } catch (err: any) {
       console.warn('[OnlineCount] 获取审计日志异常:', err);
+      if (err?.response?.status === 401) {
+        const errData = err.response.data;
+        if (errData?.kicked || errData?.code === 'SESSION_KICKED_OUT') {
+          handleLogoutAndRedirect(errData.message);
+          return;
+        }
+      }
       if (isManual) {
         message.error('获取审计日志失败：' + (err.message || '网络异常'));
       }
@@ -261,8 +301,14 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   // 强制踢下线
   const handleKickout = async (record: any) => {
     if (!api) return;
+    const currentAuth = getClientAuthInfo(api);
+    const isCurrentSession = Boolean(
+      (record.token && currentAuth.token && record.token === currentAuth.token) ||
+      (record.userId && currentAuth.user?.id && Number(record.userId) === Number(currentAuth.user.id))
+    );
+
     try {
-      await api.request({
+      const res = await api.request({
         url: 'onlineCount:kickout',
         method: 'POST',
         data: {
@@ -271,6 +317,13 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
           reason: '管理员手动在后台踢出',
         },
       });
+      const resData = res?.data?.data || res?.data;
+
+      if (isCurrentSession || resData?.isSelf) {
+        handleLogoutAndRedirect('您已成功下线当前管理员会话，系统已安全登出。');
+        return;
+      }
+
       message.success(`已成功强制下线用户：${record.username || record.nickname || '访客'}`);
       fetchSessions();
       fetchStats();
@@ -278,6 +331,10 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
         fetchAuditLogs();
       }
     } catch (err: any) {
+      if (err?.response?.status === 401 && isCurrentSession) {
+        handleLogoutAndRedirect('当前管理员会话已下线，系统已安全登出。');
+        return;
+      }
       message.error('踢出失败：' + (err.message || '未知原因'));
     }
   };
@@ -384,26 +441,38 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   };
 
   // 会话表格列配置
+  const currentAuth = getClientAuthInfo(api);
   const columns = [
     {
       title: '用户身份',
       key: 'user',
-      width: 190,
+      width: 210,
       render: (_: any, record: any) => {
         const isGuest = !record.userId;
+        const isCurrent = Boolean(
+          (record.token && currentAuth.token && record.token === currentAuth.token) ||
+          (record.userId && currentAuth.user?.id && Number(record.userId) === Number(currentAuth.user.id))
+        );
         return (
           <Space>
             <Avatar
               style={{
-                backgroundColor: isGuest ? '#d9d9d9' : '#1677ff',
+                backgroundColor: isGuest ? '#d9d9d9' : (isCurrent ? '#52c41a' : '#1677ff'),
                 verticalAlign: 'middle',
               }}
               icon={<UserOutlined />}
             />
             <div style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={{ fontWeight: 600, fontSize: 13, color: isGuest ? '#8c8c8c' : '#1f1f1f' }}>
-                {record.nickname || record.username || (isGuest ? '访客 (Guest)' : `User #${record.userId}`)}
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 600, fontSize: 13, color: isGuest ? '#8c8c8c' : '#1f1f1f' }}>
+                  {record.nickname || record.username || (isGuest ? '访客 (Guest)' : `User #${record.userId}`)}
+                </span>
+                {isCurrent && (
+                  <Tag color="success" style={{ margin: 0, fontSize: 11, lineHeight: '18px', padding: '0 5px' }}>
+                    当前会话 (您)
+                  </Tag>
+                )}
+              </div>
               <Text type="secondary" style={{ fontSize: 11 }}>
                 {isGuest ? '匿名访问' : `@${record.username || record.userId}`}
               </Text>
@@ -528,38 +597,48 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
     {
       title: '操作',
       key: 'action',
-      width: 140,
-      render: (_: any, record: any) => (
-        <Space size={8}>
-          <Button
-            size="small"
-            type="link"
-            icon={<MessageOutlined />}
-            style={{ padding: 0 }}
-            onClick={() => handleOpenDirectMessage(record)}
-          >
-            发消息
-          </Button>
-          <Popconfirm
-            title="确定要将该用户强制下线吗？"
-            description="下线后该用户的终端将立即失去访问权限并返回登录页。"
-            onConfirm={() => handleKickout(record)}
-            okText="确认下线"
-            cancelText="取消"
-            okButtonProps={{ danger: true }}
-          >
+      width: 150,
+      render: (_: any, record: any) => {
+        const isCurrent = Boolean(
+          (record.token && currentAuth.token && record.token === currentAuth.token) ||
+          (record.userId && currentAuth.user?.id && Number(record.userId) === Number(currentAuth.user.id))
+        );
+        return (
+          <Space size={8}>
             <Button
               size="small"
-              danger
-              icon={<LogoutOutlined />}
               type="link"
+              icon={<MessageOutlined />}
               style={{ padding: 0 }}
+              onClick={() => handleOpenDirectMessage(record)}
             >
-              强制下线
+              发消息
             </Button>
-          </Popconfirm>
-        </Space>
-      ),
+            <Popconfirm
+              title={isCurrent ? '⚠️ 确定要下线当前管理员会话吗？' : '确定要将该用户强制下线吗？'}
+              description={
+                isCurrent
+                  ? '这是您当前正在使用的登录会话！确认后将立即安全注销并退出系统，需要重新登录。'
+                  : '下线后该用户的终端将立即失去访问权限并返回登录页。'
+              }
+              onConfirm={() => handleKickout(record)}
+              okText={isCurrent ? '确认退出登录' : '确认下线'}
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+            >
+              <Button
+                size="small"
+                danger
+                icon={<LogoutOutlined />}
+                type="link"
+                style={{ padding: 0 }}
+              >
+                {isCurrent ? '下线自身' : '强制下线'}
+              </Button>
+            </Popconfirm>
+          </Space>
+        );
+      },
     },
   ];
 

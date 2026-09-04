@@ -13,7 +13,11 @@ export function createKickoutInterceptor(sessionControlService: SessionControlSe
       token = ctx.cookies.get('token') || ctx.cookies.get('SESSION') || '';
     }
 
-    if (token) {
+    // 心跳接口放行，由 heartbeat action 内部返回 kicked: true，避免破坏前端常规轮询并保障弹窗正常弹出
+    const path = ctx.path || '';
+    const isHeartbeat = path.includes('onlineCount:heartbeat') || (ctx.action && ctx.action.actionName === 'heartbeat');
+
+    if (token && !isHeartbeat) {
       const check = sessionControlService.isTokenKicked(token);
       if (check.kicked) {
         ctx.status = 401;

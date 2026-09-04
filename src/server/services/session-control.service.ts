@@ -29,6 +29,14 @@ export class SessionControlService {
   }
 
   /**
+   * 解除指定 Token 的踢出黑名单状态
+   */
+  unmarkKicked(token: string): void {
+    if (!token) return;
+    this.kickedTokens.delete(token);
+  }
+
+  /**
    * 强制踢出指定会话
    */
   async kickoutToken(token: string, reason = '已被管理员强制下线'): Promise<boolean> {
