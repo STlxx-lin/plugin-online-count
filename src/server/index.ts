@@ -3,6 +3,7 @@ import path from 'path';
 import { OnlineConfigService } from './services/online-config.service';
 import { SessionControlService } from './services/session-control.service';
 import { OnlineTrackerService } from './services/online-tracker.service';
+import { BroadcastService } from './services/broadcast.service';
 import { createOnlineCountResource } from './actions/online-count';
 import { createKickoutInterceptor } from './middlewares/kickout-interceptor';
 
@@ -51,7 +52,6 @@ export class PluginOnlineCountServer extends Plugin {
     );
 
     // 绑定 BroadcastService 数据库
-    const { BroadcastService } = await import('./services/broadcast.service');
     BroadcastService.getInstance().setDb(this.app.db);
 
     // 2. 注册踢出拦截中间件到全局
