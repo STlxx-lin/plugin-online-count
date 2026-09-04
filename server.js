@@ -28,9 +28,10 @@ try {
 } catch (e) {}
 
 let plugin;
-const distServerPath = path.resolve(__dirname, 'dist/server/index.js');
-if (fs.existsSync(distServerPath)) {
-  plugin = require(distServerPath);
+if (fs.existsSync(path.resolve(__dirname, 'dist/index.js'))) {
+  plugin = require(path.resolve(__dirname, 'dist/index.js'));
+} else if (fs.existsSync(path.resolve(__dirname, 'dist/server/index.js'))) {
+  plugin = require(path.resolve(__dirname, 'dist/server/index.js'));
 } else {
   plugin = require('./src/server');
 }

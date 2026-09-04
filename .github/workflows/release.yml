@@ -165,7 +165,7 @@ jobs:
           test -f "server.js" || { echo "ERROR: server.js is missing!"; exit 1; }
           test -f "client.js" || { echo "ERROR: client.js is missing!"; exit 1; }
           test -d "dist" || { echo "ERROR: dist directory not found!"; exit 1; }
-          test -f "dist/server/index.js" || { echo "ERROR: dist/server/index.js is missing!"; exit 1; }
+          (test -f "dist/index.js" || test -f "dist/server/index.js") || { echo "ERROR: server build index.js is missing!"; exit 1; }
           test -f "dist/client/index.js" || { echo "ERROR: dist/client/index.js is missing!"; exit 1; }
           
           echo "=== Package Files List ==="
