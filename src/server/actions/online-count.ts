@@ -150,11 +150,16 @@ export function createOnlineCountResource(
        */
       listSessions: async (ctx: Context, next: Next) => {
         const params = getParams(ctx);
+        const rawKw = params.keyword;
+        const cleanKw = (rawKw && rawKw !== 'undefined' && rawKw !== 'null') ? String(rawKw).trim() : '';
+        const rawDev = params.device;
+        const cleanDev = (rawDev && rawDev !== 'undefined' && rawDev !== 'null') ? String(rawDev).trim() : '';
+
         const result = await trackerService.listSessions({
-          page: params.page ? Number(params.page) : 1,
-          pageSize: params.pageSize ? Number(params.pageSize) : 20,
-          keyword: params.keyword ? String(params.keyword) : '',
-          device: params.device ? String(params.device) : '',
+          page: params.page ? Math.max(1, Number(params.page)) : 1,
+          pageSize: params.pageSize ? Math.max(1, Number(params.pageSize)) : 20,
+          keyword: cleanKw,
+          device: cleanDev,
         });
         ctx.body = result;
         await next();

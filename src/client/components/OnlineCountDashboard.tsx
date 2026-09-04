@@ -119,14 +119,16 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
     if (!api) return;
     try {
       setSessionsLoading(true);
+      const queryParams: any = {
+        page: p,
+        pageSize: ps,
+      };
+      if (kw && String(kw).trim()) queryParams.keyword = String(kw).trim();
+      if (dev && String(dev).trim()) queryParams.device = String(dev).trim();
+
       const res = await api.request({
         url: 'onlineCount:listSessions',
-        params: {
-          page: p,
-          pageSize: ps,
-          keyword: kw,
-          device: dev,
-        },
+        params: queryParams,
       });
       const data = res?.data?.data || res?.data;
       if (data) {

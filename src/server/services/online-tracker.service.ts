@@ -260,11 +260,14 @@ export class OnlineTrackerService {
   }> {
     const thresholdSec = this.configService.getNumber(CONFIG_KEYS.OFFLINE_THRESHOLD, 90);
     const now = Date.now();
-    const { page = 1, pageSize = 20, keyword = '', device = '' } = params;
+    const { page = 1, pageSize = 20 } = params;
 
-    const activeList: OnlineSessionItem[] = [];
-    const kw = keyword.trim().toLowerCase();
+    const rawKw = params.keyword;
+    const kw = (rawKw && rawKw !== 'undefined' && rawKw !== 'null') ? String(rawKw).trim().toLowerCase() : '';
+    const rawDev = params.device;
+    const filterDev = (rawDev && rawDev !== 'undefined' && rawDev !== 'null') ? String(rawDev).trim() : '';
 
+    const activeList: any[] = [];
     for (const session of this.memorySessions.values()) {
       if (session.isKicked) continue;
       const lastActiveTime = new Date(session.lastActiveAt).getTime();
@@ -273,15 +276,15 @@ export class OnlineTrackerService {
 
       // 关键词过滤
       if (kw) {
-        const matchName = session.username?.toLowerCase().includes(kw);
-        const matchNick = session.nickname?.toLowerCase().includes(kw);
-        const matchIp = session.ip?.toLowerCase().includes(kw);
-        const matchPath = session.currentPath?.toLowerCase().includes(kw);
+        const matchName = String(session.username || '').toLowerCase().includes(kw);
+        const matchNick = String(session.nickname || '').toLowerCase().includes(kw);
+        const matchIp = String(session.ip || '').toLowerCase().includes(kw);
+        const matchPath = String(session.currentPath || '').toLowerCase().includes(kw);
         if (!matchName && !matchNick && !matchIp && !matchPath) continue;
       }
 
       // 设备过滤
-      if (device && session.device !== device) continue;
+      if (filterDev && session.device !== filterDev) continue;
 
       activeList.push(session);
     }
