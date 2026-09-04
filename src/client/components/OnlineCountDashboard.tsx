@@ -39,6 +39,10 @@ import {
   GlobalOutlined,
   SafetyCertificateOutlined,
   LinkOutlined,
+  NotificationOutlined,
+  HistoryOutlined,
+  SendOutlined,
+  MessageOutlined,
 } from '@ant-design/icons';
 import { OnlineTrendChart } from './OnlineTrendChart';
 
@@ -65,6 +69,15 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
+  // 审计日志数据
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(10);
+  const [auditUsername, setAuditUsername] = useState('');
+  const [auditReasonFilter, setAuditReasonFilter] = useState('');
+  const [auditLoading, setAuditLoading] = useState(false);
+
   // 趋势图数据
   const [trendData, setTrendData] = useState<{
     times: string[];
@@ -79,6 +92,11 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   const [configForm] = Form.useForm();
   const [configsLoading, setConfigsLoading] = useState(false);
   const [savingConfigs, setSavingConfigs] = useState(false);
+
+  // 广播通知弹窗
+  const [broadcastModalOpen, setBroadcastModalOpen] = useState(false);
+  const [broadcastForm] = Form.useForm();
+  const [sendingBroadcast, setSendingBroadcast] = useState(false);
 
   // 获取指标概览
   const fetchStats = async () => {
@@ -101,41 +119,52 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       setSessionsLoading(true);
       const res = await api.request({
         url: 'onlineCount:listSessions',
-        params: { page: p, pageSize: ps, keyword: kw, device: dev },
+        params: {
+          page: p,
+          pageSize: ps,
+          keyword: kw,
+          device: dev,
+        },
       });
-      const raw = res?.data;
-      let rows: any[] = [];
-      let count = 0;
-
-      if (Array.isArray(raw)) {
-        rows = raw;
-        count = raw.length;
-      } else if (Array.isArray(raw?.data)) {
-        rows = raw.data;
-        count = raw?.meta?.count ?? raw?.count ?? raw.data.length;
-      } else if (raw?.data && typeof raw.data === 'object' && Array.isArray(raw.data.rows)) {
-        rows = raw.data.rows;
-        count = raw.data.count ?? raw.data.rows.length;
-      } else if (raw && typeof raw === 'object') {
-        if (Array.isArray(raw.rows)) {
-          rows = raw.rows;
-          count = raw.count ?? raw.rows.length;
-        } else if (Array.isArray(raw.items)) {
-          rows = raw.items;
-          count = raw.total ?? raw.items.length;
-        }
+      const data = res?.data?.data || res?.data;
+      if (data) {
+        setSessions(data.rows || []);
+        setTotalCount(data.count || 0);
       }
-
-      setSessions(rows);
-      setTotalCount(count);
-    } catch (err) {
-      console.error('[OnlineCount] fetchSessions error:', err);
+    } catch (err: any) {
+      message.error('获取在线会话失败：' + (err.message || '网络异常'));
     } finally {
       setSessionsLoading(false);
     }
   };
 
-  // 获取趋势数据
+  // 获取会话审计日志
+  const fetchAuditLogs = async (p = auditPage, ps = auditPageSize, un = auditUsername, reason = auditReasonFilter) => {
+    if (!api) return;
+    try {
+      setAuditLoading(true);
+      const res = await api.request({
+        url: 'onlineCount:getAuditLogs',
+        params: {
+          page: p,
+          pageSize: ps,
+          username: un || undefined,
+          terminationReason: reason || undefined,
+        },
+      });
+      const data = res?.data?.data || res?.data;
+      if (data) {
+        setAuditLogs(data.rows || []);
+        setAuditTotal(data.count || 0);
+      }
+    } catch (err: any) {
+      message.error('获取审计日志失败：' + (err.message || '网络异常'));
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  // 获取趋势图数据
   const fetchTrend = async (range = trendRange) => {
     if (!api) return;
     try {
@@ -152,7 +181,7 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
     }
   };
 
-  // 获取配置
+  // 加载配置参数
   const fetchConfigs = async () => {
     if (!api) return;
     try {
@@ -160,7 +189,14 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       const res = await api.request({ url: 'onlineCount:getConfigs' });
       const data = res?.data?.data || res?.data;
       if (data) {
-        configForm.setFieldsValue(data);
+        configForm.setFieldsValue({
+          online_heartbeat_interval: data.online_heartbeat_interval ?? 30,
+          online_offline_threshold: data.online_offline_threshold ?? 90,
+          online_concurrent_policy: data.online_concurrent_policy ?? 'allow_multiple',
+          online_track_guests: Boolean(data.online_track_guests ?? true),
+          online_idle_timeout_minutes: data.online_idle_timeout_minutes ?? 30,
+          online_audit_log_retention_days: data.online_audit_log_retention_days ?? 30,
+        });
       }
     } catch {}
     finally {
@@ -168,28 +204,9 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
     }
   };
 
-  // 强制踢出会话
-  const handleKickout = async (record: any) => {
-    try {
-      const res = await api.request({
-        url: 'onlineCount:kickout',
-        method: 'POST',
-        data: {
-          token: record.token,
-          userId: record.userId,
-          reason: `管理员操作强制下线 (${record.username || record.ip})`,
-        },
-      });
-      message.success(`已成功踢出会话：${record.username || record.ip}`);
-      fetchSessions();
-      fetchStats();
-    } catch (err: any) {
-      message.error(err?.response?.data?.message || '强制下线操作失败');
-    }
-  };
-
-  // 保存配置
+  // 保存策略配置
   const handleSaveConfigs = async (values: any) => {
+    if (!api) return;
     try {
       setSavingConfigs(true);
       await api.request({
@@ -197,87 +214,175 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
         method: 'POST',
         data: values,
       });
-      message.success('插件配置已成功保存并实时生效！');
-      fetchConfigs();
-    } catch {
-      message.error('保存配置失败');
+      message.success('配置已成功更新生效');
+    } catch (err: any) {
+      message.error('保存失败：' + (err.message || '网络异常'));
     } finally {
       setSavingConfigs(false);
     }
   };
 
+  // 强制踢下线
+  const handleKickout = async (record: any) => {
+    if (!api) return;
+    try {
+      await api.request({
+        url: 'onlineCount:kickout',
+        method: 'POST',
+        data: {
+          token: record.token,
+          userId: record.userId,
+          reason: '管理员手动在后台踢出',
+        },
+      });
+      message.success(`已成功强制下线用户：${record.username || record.nickname || '访客'}`);
+      fetchSessions();
+      fetchStats();
+      if (activeTab === 'audit-logs') {
+        fetchAuditLogs();
+      }
+    } catch (err: any) {
+      message.error('踢出失败：' + (err.message || '未知原因'));
+    }
+  };
+
+  // 打开给特定用户的广播弹窗
+  const handleOpenDirectMessage = (record: any) => {
+    broadcastForm.resetFields();
+    broadcastForm.setFieldsValue({
+      title: '系统通知',
+      scope: record.userId ? 'user' : 'session',
+      targetUserId: record.userId || undefined,
+      targetSessionId: record.token,
+      mode: 'modal',
+      type: 'info',
+      ttlMinutes: 15,
+      content: `您好，${record.nickname || record.username || '用户'}：`,
+    });
+    setBroadcastModalOpen(true);
+  };
+
+  // 提交发送广播
+  const handleSendBroadcast = async (values: any) => {
+    if (!api) return;
+    try {
+      setSendingBroadcast(true);
+      await api.request({
+        url: 'onlineCount:sendBroadcast',
+        method: 'POST',
+        data: values,
+      });
+      message.success('通知已成功发布，目标客户端将在下次心跳时收到提醒！');
+      setBroadcastModalOpen(false);
+      broadcastForm.resetFields();
+    } catch (err: any) {
+      message.error('发布失败：' + (err.message || '未知错误'));
+    } finally {
+      setSendingBroadcast(false);
+    }
+  };
+
   useEffect(() => {
     fetchStats();
-    fetchSessions();
-  }, [api]);
+    fetchSessions(1, pageSize);
+  }, []);
 
   useEffect(() => {
     if (activeTab === 'trend') {
-      fetchTrend(trendRange);
+      fetchTrend();
     } else if (activeTab === 'settings') {
       fetchConfigs();
+    } else if (activeTab === 'audit-logs') {
+      fetchAuditLogs(1, auditPageSize);
     }
-  }, [activeTab, trendRange]);
+  }, [activeTab]);
 
-  // 自动轮询刷新
+  // 定时自动刷新会话与指标
   useEffect(() => {
     if (!autoRefresh) return;
     const timer = setInterval(() => {
-      fetchStats();
       if (activeTab === 'sessions') {
-        fetchSessions(page, pageSize, keyword, deviceFilter);
+        fetchStats();
+        fetchSessions();
       }
-    }, 10000);
+    }, 15000);
     return () => clearInterval(timer);
-  }, [autoRefresh, page, pageSize, keyword, deviceFilter, activeTab]);
+  }, [autoRefresh, activeTab, page, pageSize, keyword, deviceFilter]);
 
-  const deviceTag = (dev: string) => {
-    if (dev === 'Mobile') return <Tag icon={<MobileOutlined />} color="purple">手机端</Tag>;
-    if (dev === 'Tablet') return <Tag icon={<TabletOutlined />} color="cyan">平板</Tag>;
-    return <Tag icon={<DesktopOutlined />} color="blue">PC桌面</Tag>;
+  // 格式化时长显示
+  const formatDuration = (seconds: number) => {
+    if (!seconds || seconds <= 0) return '< 1 秒';
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    const parts = [];
+    if (hours > 0) parts.push(`${hours} 小时`);
+    if (minutes > 0) parts.push(`${minutes} 分`);
+    if (secs > 0 || parts.length === 0) parts.push(`${secs} 秒`);
+    return parts.join(' ');
   };
 
+  // 渲染设备图标
+  const renderDeviceIcon = (dev: string) => {
+    if (dev === 'Mobile') return <MobileOutlined style={{ color: '#1677ff' }} />;
+    if (dev === 'Tablet') return <TabletOutlined style={{ color: '#722ed1' }} />;
+    return <DesktopOutlined style={{ color: '#52c41a' }} />;
+  };
+
+  // 会话表格列配置
   const columns = [
     {
-      title: '在线用户',
+      title: '用户身份',
       key: 'user',
-      width: 180,
-      render: (_: any, record: any) => (
-        <Space size={10}>
-          <Avatar
-            style={{
-              backgroundColor: record.userId ? '#1677ff' : '#8c8c8c',
-              verticalAlign: 'middle',
-            }}
-            icon={<UserOutlined />}
-          >
-            {record.nickname ? record.nickname.charAt(0).toUpperCase() : 'U'}
-          </Avatar>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontWeight: 600, color: '#262626' }}>
-              {record.nickname || record.username || '访客'}
-            </span>
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              {record.userId ? `@${record.username}` : '未登录访客'}
-            </Text>
-          </div>
-        </Space>
+      width: 190,
+      render: (_: any, record: any) => {
+        const isGuest = !record.userId;
+        return (
+          <Space>
+            <Avatar
+              style={{
+                backgroundColor: isGuest ? '#d9d9d9' : '#1677ff',
+                verticalAlign: 'middle',
+              }}
+              icon={<UserOutlined />}
+            />
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <span style={{ fontWeight: 600, fontSize: 13, color: isGuest ? '#8c8c8c' : '#1f1f1f' }}>
+                {record.nickname || record.username || (isGuest ? '访客 (Guest)' : `User #${record.userId}`)}
+              </span>
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                {isGuest ? '匿名访问' : `@${record.username || record.userId}`}
+              </Text>
+            </div>
+          </Space>
+        );
+      },
+    },
+    {
+      title: '客户端 IP / 地理',
+      dataIndex: 'ip',
+      key: 'ip',
+      width: 140,
+      render: (ip: string) => (
+        <Tag icon={<GlobalOutlined />} color="blue">
+          {ip || '127.0.0.1'}
+        </Tag>
       ),
     },
     {
-      title: '客户端环境',
-      key: 'client',
-      width: 200,
+      title: '终端环境',
+      key: 'environment',
+      width: 170,
       render: (_: any, record: any) => (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            {deviceTag(record.device)}
-            <Tag color="geekblue" style={{ margin: 0 }}>{record.browser || 'Browser'}</Tag>
+        <Space direction="vertical" size={2}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+            {renderDeviceIcon(record.device)}
+            <span style={{ fontWeight: 500 }}>{record.os || 'Unknown OS'}</span>
           </div>
           <Text type="secondary" style={{ fontSize: 11 }}>
-            {record.os || 'OS'} | IP: <code style={{ fontSize: 11 }}>{record.ip}</code>
+            {record.browser || 'Unknown Browser'}
           </Text>
-        </div>
+        </Space>
       ),
     },
     {
@@ -356,10 +461,10 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       },
     },
     {
-      title: '首次上线时间',
+      title: '上线时间',
       dataIndex: 'loginAt',
       key: 'loginAt',
-      width: 150,
+      width: 140,
       render: (time: any) => (
         <span style={{ fontSize: 12, color: '#595959' }}>
           {new Date(time).toLocaleTimeString()}
@@ -369,26 +474,144 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
     {
       title: '操作',
       key: 'action',
-      width: 110,
+      width: 140,
       render: (_: any, record: any) => (
-        <Popconfirm
-          title="确定要将该用户强制下线吗？"
-          description="下线后该用户的终端将立即失去访问权限并返回登录页。"
-          onConfirm={() => handleKickout(record)}
-          okText="确认下线"
-          cancelText="取消"
-          okButtonProps={{ danger: true }}
-        >
+        <Space size={8}>
           <Button
             size="small"
-            danger
-            icon={<LogoutOutlined />}
             type="link"
+            icon={<MessageOutlined />}
             style={{ padding: 0 }}
+            onClick={() => handleOpenDirectMessage(record)}
           >
-            强制下线
+            发消息
           </Button>
-        </Popconfirm>
+          <Popconfirm
+            title="确定要将该用户强制下线吗？"
+            description="下线后该用户的终端将立即失去访问权限并返回登录页。"
+            onConfirm={() => handleKickout(record)}
+            okText="确认下线"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+          >
+            <Button
+              size="small"
+              danger
+              icon={<LogoutOutlined />}
+              type="link"
+              style={{ padding: 0 }}
+            >
+              强制下线
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
+  // 审计日志表格列配置
+  const auditColumns = [
+    {
+      title: '用户身份',
+      key: 'user',
+      width: 170,
+      render: (_: any, record: any) => (
+        <Space>
+          <Avatar
+            size="small"
+            style={{ backgroundColor: record.userId ? '#1677ff' : '#bfbfbf' }}
+            icon={<UserOutlined />}
+          />
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ fontSize: 12, fontWeight: 600 }}>
+              {record.nickname || record.username || '访客'}
+            </span>
+            <span style={{ fontSize: 11, color: '#8c8c8c' }}>
+              {record.userId ? `@${record.username}` : '匿名会话'}
+            </span>
+          </div>
+        </Space>
+      ),
+    },
+    {
+      title: 'IP 地址',
+      dataIndex: 'ip',
+      key: 'ip',
+      width: 130,
+      render: (ip: string) => <Tag color="geekblue">{ip || '127.0.0.1'}</Tag>,
+    },
+    {
+      title: '终端环境',
+      key: 'env',
+      width: 150,
+      render: (_: any, record: any) => (
+        <span style={{ fontSize: 12 }}>
+          {record.os} / {record.browser}
+        </span>
+      ),
+    },
+    {
+      title: '上线时间',
+      dataIndex: 'loginAt',
+      key: 'loginAt',
+      width: 150,
+      render: (time: any) => (
+        <span style={{ fontSize: 12 }}>{new Date(time).toLocaleString()}</span>
+      ),
+    },
+    {
+      title: '下线时间',
+      dataIndex: 'logoutAt',
+      key: 'logoutAt',
+      width: 150,
+      render: (time: any) => (
+        <span style={{ fontSize: 12, color: '#595959' }}>{new Date(time).toLocaleString()}</span>
+      ),
+    },
+    {
+      title: '总在线时长',
+      dataIndex: 'durationSeconds',
+      key: 'durationSeconds',
+      width: 130,
+      render: (sec: number) => (
+        <Tag color="purple" style={{ fontWeight: 500 }}>
+          {formatDuration(sec)}
+        </Tag>
+      ),
+    },
+    {
+      title: '下线原因',
+      dataIndex: 'terminationReason',
+      key: 'terminationReason',
+      width: 160,
+      render: (reason: string) => {
+        if (reason === 'kickout') {
+          return <Tag color="error">管理员强制下线</Tag>;
+        }
+        if (reason === 'mutex_kickout') {
+          return <Tag color="warning">单点互斥踢出</Tag>;
+        }
+        if (reason === 'idle_timeout') {
+          return <Tag color="gold">挂机空闲超时</Tag>;
+        }
+        if (reason === 'heartbeat_timeout') {
+          return <Tag color="default">心跳断开超时</Tag>;
+        }
+        if (reason === 'manual_logout') {
+          return <Tag color="blue">主动退出登录</Tag>;
+        }
+        return <Tag color="default">{reason || '离线'}</Tag>;
+      },
+    },
+    {
+      title: '详细说明',
+      dataIndex: 'detail',
+      key: 'detail',
+      ellipsis: true,
+      render: (text: string) => (
+        <Tooltip title={text}>
+          <span style={{ fontSize: 12, color: '#8c8c8c' }}>{text || '-'}</span>
+        </Tooltip>
       ),
     },
   ];
@@ -402,11 +625,29 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
             👥 在线人数与会话管控中心
           </h2>
           <Text type="secondary" style={{ fontSize: 13 }}>
-            实时监控全平台在线用户、掌握系统并发负载与高峰时段、支持多端会话安全管控与一键强制下线。
+            实时监控全平台在线用户、掌握系统并发负载与高峰时段、支持多端会话安全管控、即时广播与审计日志。
           </Text>
         </div>
 
-        <Space>
+        <Space size={12}>
+          <Button
+            type="primary"
+            icon={<NotificationOutlined />}
+            style={{ background: '#722ed1', borderColor: '#722ed1' }}
+            onClick={() => {
+              broadcastForm.resetFields();
+              broadcastForm.setFieldsValue({
+                title: '系统通知',
+                scope: 'all',
+                mode: 'notification',
+                type: 'info',
+                ttlMinutes: 15,
+              });
+              setBroadcastModalOpen(true);
+            }}
+          >
+            📢 发送即时广播
+          </Button>
           <span style={{ fontSize: 12, color: '#8c8c8c' }}>
             自动刷新 ({autoRefresh ? '开启' : '关闭'})
           </span>
@@ -415,9 +656,11 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
             icon={<ReloadOutlined />}
             onClick={() => {
               fetchStats();
-              fetchSessions();
+              if (activeTab === 'sessions') fetchSessions();
+              if (activeTab === 'audit-logs') fetchAuditLogs();
+              if (activeTab === 'trend') fetchTrend();
             }}
-            loading={statsLoading || sessionsLoading}
+            loading={statsLoading || sessionsLoading || auditLoading}
           >
             刷新数据
           </Button>
@@ -580,6 +823,95 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
               ),
             },
             {
+              key: 'audit-logs',
+              label: (
+                <span>
+                  <HistoryOutlined style={{ marginRight: 6 }} />
+                  会话审计日志 ({auditTotal})
+                </span>
+              ),
+              children: (
+                <div>
+                  {/* 审计日志搜索栏 */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 16,
+                      background: '#fafafa',
+                      padding: '10px 14px',
+                      borderRadius: 6,
+                    }}
+                  >
+                    <Space size={12}>
+                      <Input
+                        placeholder="搜索用户名 / 昵称..."
+                        prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
+                        value={auditUsername}
+                        onChange={(e) => setAuditUsername(e.target.value)}
+                        onPressEnter={() => {
+                          setAuditPage(1);
+                          fetchAuditLogs(1, auditPageSize, auditUsername, auditReasonFilter);
+                        }}
+                        allowClear
+                        style={{ width: 220 }}
+                      />
+                      <Select
+                        placeholder="所有下线原因"
+                        value={auditReasonFilter || undefined}
+                        onChange={(val) => {
+                          setAuditReasonFilter(val || '');
+                          setAuditPage(1);
+                          fetchAuditLogs(1, auditPageSize, auditUsername, val || '');
+                        }}
+                        allowClear
+                        style={{ width: 170 }}
+                      >
+                        <Select.Option value="kickout">管理员强制下线</Select.Option>
+                        <Select.Option value="mutex_kickout">单点互斥踢出</Select.Option>
+                        <Select.Option value="idle_timeout">挂机空闲超时</Select.Option>
+                        <Select.Option value="heartbeat_timeout">心跳断开超时</Select.Option>
+                        <Select.Option value="manual_logout">主动退出登录</Select.Option>
+                      </Select>
+                      <Button
+                        type="primary"
+                        icon={<SearchOutlined />}
+                        onClick={() => {
+                          setAuditPage(1);
+                          fetchAuditLogs(1, auditPageSize, auditUsername, auditReasonFilter);
+                        }}
+                      >
+                        查询
+                      </Button>
+                    </Space>
+
+                    <Button icon={<ReloadOutlined />} onClick={() => fetchAuditLogs()}>
+                      刷新审计日志
+                    </Button>
+                  </div>
+
+                  <Table
+                    columns={auditColumns}
+                    dataSource={auditLogs}
+                    rowKey="id"
+                    loading={auditLoading}
+                    pagination={{
+                      current: auditPage,
+                      pageSize: auditPageSize,
+                      total: auditTotal,
+                      showTotal: (total) => `共 ${total} 条历史审计记录`,
+                      onChange: (p, ps) => {
+                        setAuditPage(p);
+                        setAuditPageSize(ps);
+                        fetchAuditLogs(p, ps, auditUsername, auditReasonFilter);
+                      },
+                    }}
+                  />
+                </div>
+              ),
+            },
+            {
               key: 'trend',
               label: (
                 <span>
@@ -624,15 +956,31 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
                       name="online_heartbeat_interval"
                       extra="前端浏览器静默向服务器发送心跳保持活跃状态的间隔时间，建议 30 秒。"
                     >
-                      <InputNumber min={10} max={300} style={{ width: 200 }} />
+                      <InputNumber min={10} max={300} style={{ width: 220 }} />
                     </Form.Item>
 
                     <Form.Item
                       label="离线超时判定阈值 (秒)"
                       name="online_offline_threshold"
-                      extra="超过该时间未收到心跳包，系统将自动判定该用户已断开离线，建议 90 秒。"
+                      extra="超过该时间未收到心跳包，系统将自动判定该用户已断开离线并记录审计日志，建议 90 秒。"
                     >
-                      <InputNumber min={30} max={600} style={{ width: 200 }} />
+                      <InputNumber min={30} max={600} style={{ width: 220 }} />
+                    </Form.Item>
+
+                    <Form.Item
+                      label="挂机空闲超时自动登出 (分钟)"
+                      name="online_idle_timeout_minutes"
+                      extra="用户在浏览器中无任何键盘、鼠标或交互操作达到设定时长后，将弹出 60 秒倒计时预警，到期未响应自动注销登出。填 0 表示禁用挂机保护。"
+                    >
+                      <InputNumber min={0} max={1440} style={{ width: 220 }} addonAfter="分钟 (0为禁用)" />
+                    </Form.Item>
+
+                    <Form.Item
+                      label="会话审计日志保留周期 (天)"
+                      name="online_audit_log_retention_days"
+                      extra="系统自动清理超过指定天数的历史下线审计记录，避免数据库存储膨胀，建议 30 天。"
+                    >
+                      <InputNumber min={1} max={365} style={{ width: 220 }} addonAfter="天" />
                     </Form.Item>
 
                     <Form.Item
@@ -677,6 +1025,141 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
           ]}
         />
       </Card>
+
+      {/* 发送广播 / 消息弹窗 */}
+      <Modal
+        title="📢 发布即时通知与广播"
+        open={broadcastModalOpen}
+        onCancel={() => setBroadcastModalOpen(false)}
+        footer={null}
+        destroyOnClose
+        width={540}
+      >
+        <Form
+          form={broadcastForm}
+          layout="vertical"
+          onFinish={handleSendBroadcast}
+          initialValues={{
+            title: '系统通知',
+            scope: 'all',
+            mode: 'notification',
+            type: 'info',
+            ttlMinutes: 15,
+          }}
+        >
+          <Form.Item
+            label="通知范围"
+            name="scope"
+            rules={[{ required: true }]}
+          >
+            <Radio.Group>
+              <Radio.Button value="all">全员广播 (所有在线用户与访客)</Radio.Button>
+              <Radio.Button value="user">指定用户</Radio.Button>
+              <Radio.Button value="session">指定会话</Radio.Button>
+            </Radio.Group>
+          </Form.Item>
+
+          <Form.Item
+            noStyle
+            shouldUpdate={(prev, cur) => prev.scope !== cur.scope}
+          >
+            {({ getFieldValue }) => {
+              const scope = getFieldValue('scope');
+              if (scope === 'user') {
+                return (
+                  <Form.Item
+                    label="目标用户 ID"
+                    name="targetUserId"
+                    rules={[{ required: true, message: '请输入目标用户 ID' }]}
+                  >
+                    <Input placeholder="例如: 1" />
+                  </Form.Item>
+                );
+              }
+              if (scope === 'session') {
+                return (
+                  <Form.Item
+                    label="目标会话 Token"
+                    name="targetSessionId"
+                    rules={[{ required: true, message: '请输入目标会话 Token' }]}
+                  >
+                    <Input placeholder="输入或从表格选中的会话 Token" />
+                  </Form.Item>
+                );
+              }
+              return null;
+            }}
+          </Form.Item>
+
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="呈现方式"
+                name="mode"
+                rules={[{ required: true }]}
+              >
+                <Select>
+                  <Select.Option value="notification">右上角浮窗 (Notification)</Select.Option>
+                  <Select.Option value="modal">强阻断弹窗 (Modal 需确认)</Select.Option>
+                </Select>
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="消息等级"
+                name="type"
+                rules={[{ required: true }]}
+              >
+                <Select>
+                  <Select.Option value="info">常规提示 (Info)</Select.Option>
+                  <Select.Option value="warning">重要警告 (Warning)</Select.Option>
+                  <Select.Option value="error">紧急通知 (Error)</Select.Option>
+                </Select>
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Form.Item
+            label="通知标题"
+            name="title"
+            rules={[{ required: true, message: '请输入通知标题' }]}
+          >
+            <Input placeholder="例如: 系统维护公告" />
+          </Form.Item>
+
+          <Form.Item
+            label="通知内容"
+            name="content"
+            rules={[{ required: true, message: '请输入通知内容' }]}
+          >
+            <Input.TextArea
+              rows={4}
+              placeholder="请输入要发送的通知详细正文，支持换行..."
+            />
+          </Form.Item>
+
+          <Form.Item
+            label="有效时长 (分钟)"
+            name="ttlMinutes"
+            extra="在此期间内保持心跳的在线用户均会收到该条广播，超时自动销毁。"
+          >
+            <InputNumber min={1} max={120} style={{ width: '100%' }} addonAfter="分钟" />
+          </Form.Item>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+            <Button onClick={() => setBroadcastModalOpen(false)}>取消</Button>
+            <Button
+              type="primary"
+              htmlType="submit"
+              icon={<SendOutlined />}
+              loading={sendingBroadcast}
+              style={{ background: '#722ed1', borderColor: '#722ed1' }}
+            >
+              立即发送
+            </Button>
+          </div>
+        </Form>
+      </Modal>
     </div>
   );
 };

@@ -4,6 +4,7 @@ import { OnlineConfigService } from './online-config.service';
 import { SessionControlService } from './session-control.service';
 import { CONFIG_KEYS } from '../constants';
 import { parseUserAgent } from '../utils/device-parser';
+import { AuditLogService } from './audit-log.service';
 
 export interface HeartbeatPayload {
   token: string;
@@ -108,6 +109,20 @@ export class OnlineTrackerService {
       for (const [otherToken, s] of this.memorySessions.entries()) {
         if (s.userId === userId && otherToken !== token && !s.isKicked) {
           await this.sessionControlService.kickoutToken(otherToken, '账号已在另一台设备登录，您已被迫下线');
+          AuditLogService.getInstance().recordSessionEnd(this.app.db, {
+            sessionId: s.token,
+            userId: s.userId ? Number(s.userId) : null,
+            username: s.username,
+            nickname: s.nickname,
+            ip: s.ip,
+            device: s.device,
+            os: s.os,
+            browser: s.browser,
+            loginAt: s.loginAt,
+            lastActiveAt: s.lastActiveAt,
+            terminationReason: 'mutex_kickout',
+            detail: '单点登录互斥踢出：账号在另一台设备登录',
+          });
         }
       }
     }
@@ -377,6 +392,13 @@ export class OnlineTrackerService {
   }
 
   /**
+   * 获取指定 Token 的会话信息
+   */
+  getSession(token: string): OnlineSessionItem | undefined {
+    return this.memorySessions.get(token);
+  }
+
+  /**
    * 清理过期超时的离线会话
    */
   private async cleanupExpiredSessions(): Promise<void> {
@@ -388,6 +410,24 @@ export class OnlineTrackerService {
       const lastActiveTime = new Date(session.lastActiveAt).getTime();
       if (now - lastActiveTime > thresholdSec * 1000 * 2) {
         expiredTokens.push(token);
+
+        // 归档超时离线会话（已踢出的由于在踢出动作时已直接记录，此处仅归档自然超时者）
+        if (!session.isKicked) {
+          AuditLogService.getInstance().recordSessionEnd(this.app.db, {
+            sessionId: session.token,
+            userId: session.userId ? Number(session.userId) : null,
+            username: session.username,
+            nickname: session.nickname,
+            ip: session.ip,
+            device: session.device,
+            os: session.os,
+            browser: session.browser,
+            loginAt: session.loginAt,
+            lastActiveAt: session.lastActiveAt,
+            terminationReason: 'heartbeat_timeout',
+            detail: '心跳中断超时，系统自动判定离线',
+          });
+        }
       }
     }
 
@@ -395,7 +435,7 @@ export class OnlineTrackerService {
       this.memorySessions.delete(token);
     }
 
-    // 清理数据库中超期较长的记录（每 10 分钟最多执行一次，避免频繁操作 SQLite 引发锁定）
+    // 清理数据库中超期较长的记录及审计日志（每 10 分钟最多执行一次，避免频繁操作 SQLite 引发锁定）
     const nowSec = Math.floor(now / 1000);
     if (nowSec % 600 < 30) {
       try {
@@ -412,6 +452,10 @@ export class OnlineTrackerService {
             })
             .catch(() => {});
         }
+
+        // 清理过期历史审计日志
+        const retentionDays = this.configService.getNumber(CONFIG_KEYS.AUDIT_LOG_RETENTION_DAYS, 30);
+        await AuditLogService.getInstance().cleanupOldLogs(this.app.db, retentionDays);
       } catch {}
     }
 

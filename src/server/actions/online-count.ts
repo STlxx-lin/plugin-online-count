@@ -3,6 +3,9 @@ import { OnlineTrackerService } from '../services/online-tracker.service';
 import { SessionControlService } from '../services/session-control.service';
 import { OnlineConfigService } from '../services/online-config.service';
 import { extractClientIp } from '../utils/device-parser';
+import { BroadcastService } from '../services/broadcast.service';
+import { AuditLogService } from '../services/audit-log.service';
+import { CONFIG_KEYS } from '../constants';
 
 function parseJwtPayload(token: string): any {
   try {
@@ -36,6 +39,9 @@ export function createOnlineCountResource(
   sessionControlService: SessionControlService,
   configService: OnlineConfigService,
 ) {
+  const broadcastService = BroadcastService.getInstance();
+  const auditLogService = AuditLogService.getInstance();
+
   return {
     name: 'onlineCount',
     actions: {
@@ -108,7 +114,21 @@ export function createOnlineCountResource(
           currentPath,
         });
 
-        ctx.body = result;
+        // 检查是否有给当前客户端/用户的即时广播或通知
+        const seenMessageIds = Array.isArray(params.seenMessageIds) ? params.seenMessageIds : [];
+        const pendingBroadcasts = broadcastService.getPendingForClient({
+          sessionId: token,
+          userId: finalUserId,
+          seenMessageIds,
+        });
+
+        const idleTimeoutMinutes = configService.getNumber(CONFIG_KEYS.IDLE_TIMEOUT_MINUTES, 30);
+
+        ctx.body = {
+          ...result,
+          idleTimeoutMinutes,
+          broadcasts: pendingBroadcasts,
+        };
         await next();
       },
 
@@ -149,13 +169,100 @@ export function createOnlineCountResource(
 
         let success = false;
         if (token) {
+          const sessionInfo = trackerService.getSession(String(token));
           success = await sessionControlService.kickoutToken(String(token), String(reason));
+          if (sessionInfo) {
+            auditLogService.recordSessionEnd(ctx.db, {
+              sessionId: sessionInfo.token,
+              userId: sessionInfo.userId ? Number(sessionInfo.userId) : null,
+              username: sessionInfo.username,
+              nickname: sessionInfo.nickname,
+              ip: sessionInfo.ip,
+              device: sessionInfo.device,
+              os: sessionInfo.os,
+              browser: sessionInfo.browser,
+              loginAt: sessionInfo.loginAt,
+              lastActiveAt: sessionInfo.lastActiveAt,
+              terminationReason: 'kickout',
+              detail: `管理员强制下线：${reason}`,
+            });
+          }
         } else if (userId) {
           const count = await sessionControlService.kickoutUser(userId, undefined, String(reason));
           success = count > 0;
         }
 
         ctx.body = { success, message: success ? '已成功强制下线' : '操作失败' };
+        await next();
+      },
+
+      /**
+       * 发送广播通知（支持全员或定向）
+       */
+      sendBroadcast: async (ctx: Context, next: Next) => {
+        const params = getParams(ctx);
+        const { title, content, mode, scope, targetUserId, targetSessionId, type, ttlMinutes } = params;
+        if (!content) {
+          ctx.throw(400, 'content is required');
+        }
+
+        const msg = broadcastService.publish({
+          title: title || '系统广播',
+          content: String(content),
+          mode: mode || 'notification',
+          scope: scope || 'all',
+          targetUserId: targetUserId ? Number(targetUserId) : null,
+          targetSessionId: targetSessionId || null,
+          type: type || 'info',
+          ttlMinutes: ttlMinutes ? Number(ttlMinutes) : 15,
+        });
+
+        ctx.body = { success: true, message: msg };
+        await next();
+      },
+
+      /**
+       * 查询会话审计日志
+       */
+      getAuditLogs: async (ctx: Context, next: Next) => {
+        const params = getParams(ctx);
+        const result = await auditLogService.getAuditLogs(ctx.db, {
+          page: params.page ? Number(params.page) : 1,
+          pageSize: params.pageSize ? Number(params.pageSize) : 20,
+          username: params.username ? String(params.username) : undefined,
+          terminationReason: params.terminationReason ? String(params.terminationReason) : undefined,
+        });
+        ctx.body = result;
+        await next();
+      },
+
+      /**
+       * 客户端主动上报空闲挂机超时下线
+       */
+      reportIdle: async (ctx: Context, next: Next) => {
+        const params = getParams(ctx);
+        const { token } = params;
+        if (token) {
+          const sessionInfo = trackerService.getSession(String(token));
+          await sessionControlService.kickoutToken(String(token), '挂机空闲超时，系统已自动登出');
+          if (sessionInfo) {
+            auditLogService.recordSessionEnd(ctx.db, {
+              sessionId: sessionInfo.token,
+              userId: sessionInfo.userId ? Number(sessionInfo.userId) : null,
+              username: sessionInfo.username,
+              nickname: sessionInfo.nickname,
+              ip: sessionInfo.ip,
+              device: sessionInfo.device,
+              os: sessionInfo.os,
+              browser: sessionInfo.browser,
+              loginAt: sessionInfo.loginAt,
+              lastActiveAt: sessionInfo.lastActiveAt,
+              terminationReason: 'idle_timeout',
+              detail: '长时间未检测到键鼠操作，触发挂机保护自动下线',
+            });
+          }
+        }
+        ctx.body = { success: true };
         await next();
       },
 
