@@ -563,6 +563,8 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       } catch {}
       fetchStats();
       fetchSessions(1, pageSize);
+      fetchBroadcasts(1, broadcastPageSize);
+      fetchAuditLogs(1, auditPageSize);
     };
 
     initDashboard();
@@ -1129,9 +1131,9 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
                 });
               } catch {}
               fetchStats();
-              if (activeTab === 'sessions') fetchSessions(page, pageSize, keyword, deviceFilter, true);
-              if (activeTab === 'broadcasts') fetchBroadcasts(broadcastPage, broadcastPageSize, broadcastStatusFilter, true);
-              if (activeTab === 'audit-logs') fetchAuditLogs(auditPage, auditPageSize, auditUsername, auditReasonFilter, true);
+              fetchSessions(page, pageSize, keyword, deviceFilter, activeTab === 'sessions');
+              fetchBroadcasts(broadcastPage, broadcastPageSize, broadcastStatusFilter, activeTab === 'broadcasts');
+              fetchAuditLogs(auditPage, auditPageSize, auditUsername, auditReasonFilter, activeTab === 'audit-logs');
               if (activeTab === 'trend') fetchTrend();
             }}
             loading={statsLoading || sessionsLoading || auditLoading || broadcastLoading}
