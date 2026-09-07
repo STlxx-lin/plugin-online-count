@@ -81,25 +81,44 @@ export class PluginOnlineCountServer extends Plugin {
 
     // 心跳上报允许公开/访客调用
     this.app.acl.allow('onlineCount', 'heartbeat', 'public');
-    // 看板统计、会话列表、广播管理及配置允许已登录用户或管理员访问
+
+    // 基础统计查看、在线用户列表与客户端空闲超时挂机上报，允许常规已登录用户调用
     this.app.acl.allow(
       'onlineCount',
       [
         'getStats',
+        'getTrend',
+        'getOnlineUsersList',
+        'reportIdle',
+      ],
+      'loggedIn',
+    );
+
+    // 核心管理接口（会话踢出、参数配置、广播推送与撤回、审计日志查询等）仅允许系统管理员/具备配置权限的角色访问
+    this.app.acl.allow(
+      'onlineCount',
+      [
         'listSessions',
         'kickout',
-        'getTrend',
         'getConfigs',
         'updateConfigs',
         'sendBroadcast',
         'listBroadcasts',
         'revokeBroadcast',
         'getBroadcastReaders',
-        'getOnlineUsersList',
         'getAuditLogs',
-        'reportIdle',
       ],
-      'loggedIn',
+      (ctx: any) => {
+        const user = ctx.state?.currentUser;
+        if (!user) return false;
+        // 支持超级管理员（id === 1 或 具有 root/admin 标识角色）
+        if (user.id === 1) return true;
+        const roles = user.roles || ctx.state?.currentRoles || [];
+        return roles.some((r: any) => {
+          const roleName = typeof r === 'string' ? r : r.name || r.roleName;
+          return roleName === 'root' || roleName === 'admin' || roleName === 'superAdmin';
+        });
+      },
     );
 
     await this.trackerService.init();

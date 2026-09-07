@@ -140,8 +140,28 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   const [broadcastStatusFilter, setBroadcastStatusFilter] = useState('');
   const [broadcastLoading, setBroadcastLoading] = useState(false);
 
-  // 在线认证用户下拉列表
+  // 在线认证用户下拉列表与自由输入支持
   const [onlineUserOptions, setOnlineUserOptions] = useState<{ label: string; value: string; userId: any }[]>([]);
+  const [userSearchText, setUserSearchText] = useState('');
+
+  const combinedUserOptions = React.useMemo(() => {
+    const text = userSearchText.trim();
+    if (!text) return onlineUserOptions;
+    const exists = onlineUserOptions.some(
+      (o: any) => o.value.toLowerCase() === text.toLowerCase() || String(o.userId) === text
+    );
+    if (!exists) {
+      return [
+        {
+          label: `指定输入用户: "${text}" (支持手动指定用户名或 UID)`,
+          value: text,
+          userId: /^\d+$/.test(text) ? Number(text) : undefined,
+        },
+        ...onlineUserOptions,
+      ];
+    }
+    return onlineUserOptions;
+  }, [onlineUserOptions, userSearchText]);
 
   // 广播阅读人员明细抽屉
   const [readersDrawerOpen, setReadersDrawerOpen] = useState(false);
@@ -465,6 +485,7 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
         data: {
           token: record.token,
           userId: record.userId,
+          relatedTokens: record.relatedTokens || [],
           reason: '管理员手动在后台踢出',
         },
       });
@@ -493,6 +514,7 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
   // 打开给特定用户的广播弹窗
   const handleOpenDirectMessage = (record: any) => {
     fetchOnlineUsersList();
+    setUserSearchText('');
     broadcastForm.resetFields();
     broadcastForm.setFieldsValue({
       title: '系统消息提醒',
@@ -527,12 +549,36 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
     if (!api) return;
     try {
       setSendingBroadcast(true);
+      const payload = { ...values };
+
+      if (payload.scope === 'user') {
+        const usernameVal = payload.targetUsername ? String(payload.targetUsername).trim() : '';
+        if (!usernameVal && !payload.targetUserId) {
+          message.error('请选择或输入目标用户名或 UID');
+          setSendingBroadcast(false);
+          return;
+        }
+
+        // 尝试从当前 onlineUserOptions 自动匹配补充 targetUserId
+        if (!payload.targetUserId && usernameVal) {
+          const matched = onlineUserOptions.find(
+            (opt: any) =>
+              String(opt.value).toLowerCase() === usernameVal.toLowerCase() ||
+              String(opt.userId) === usernameVal
+          );
+          if (matched && matched.userId) {
+            payload.targetUserId = matched.userId;
+            payload.targetUsername = matched.value;
+          }
+        }
+      }
+
       await api.request({
         url: 'onlineCount:sendBroadcast',
         method: 'POST',
-        data: values,
+        data: payload,
       });
-      message.success('广播通知已成功发布，所有目标在线客户端将在心跳时即时送达！');
+      message.success('广播通知已成功发布，目标在线客户端将在心跳时即时送达！');
       setBroadcastModalOpen(false);
       broadcastForm.resetFields();
       if (activeTab === 'broadcasts') {
@@ -603,7 +649,7 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
-    const parts = [];
+    const parts: string[] = [];
     if (hours > 0) parts.push(`${hours} 小时`);
     if (minutes > 0) parts.push(`${minutes} 分`);
     if (secs > 0 || parts.length === 0) parts.push(`${secs} 秒`);
@@ -659,15 +705,42 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       },
     },
     {
-      title: '客户端 IP / 地理',
-      dataIndex: 'ip',
+      title: '客户端 IP / 网络环境',
       key: 'ip',
-      width: 140,
-      render: (ip: string) => (
-        <Tag icon={<GlobalOutlined />} color="blue">
-          {ip || '127.0.0.1'}
-        </Tag>
-      ),
+      width: 170,
+      render: (_: any, record: any) => {
+        const hasDual = record.isDualStack || (record.ipv4 && record.ipv6);
+        const displayIp = record.ip || record.ipv4 || record.ipv6 || '127.0.0.1';
+
+        if (hasDual) {
+          return (
+            <Tooltip
+              title={
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>双栈网络环境识别</div>
+                  <div>• IPv4: {record.ipv4 || '未捕获'}</div>
+                  <div>• IPv6: {record.ipv6 || '未捕获'}</div>
+                </div>
+              }
+            >
+              <Space direction="vertical" size={2}>
+                <Tag icon={<GlobalOutlined />} color="cyan" style={{ cursor: 'pointer', margin: 0 }}>
+                  {displayIp}
+                </Tag>
+                <Tag color="geekblue" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', margin: 0 }}>
+                  IPv4 / IPv6 双栈
+                </Tag>
+              </Space>
+            </Tooltip>
+          );
+        }
+
+        return (
+          <Tag icon={<GlobalOutlined />} color="blue">
+            {displayIp}
+          </Tag>
+        );
+      },
     },
     {
       title: '终端环境',
@@ -855,7 +928,9 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
             <Space direction="vertical" size={2}>
               <Tag color="cyan">指定用户</Tag>
               <span style={{ fontSize: 11, color: '#595959' }}>
-                {record.targetUsername ? `@${record.targetUsername}` : `UID: ${record.targetUserId}`}
+                {record.targetUsername ? `@${record.targetUsername}` : ''}
+                {record.targetUserId ? ` (UID: ${record.targetUserId})` : ''}
+                {!record.targetUsername && !record.targetUserId ? '未知目标' : ''}
               </span>
             </Space>
           );
@@ -1356,6 +1431,7 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
                         style={{ background: '#722ed1', borderColor: '#722ed1' }}
                         onClick={() => {
                           fetchOnlineUsersList();
+                          setUserSearchText('');
                           broadcastForm.resetFields();
                           broadcastForm.setFieldsValue({
                             title: '系统通知',
@@ -1650,7 +1726,10 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       <Modal
         title="📢 发布即时通知与广播"
         open={broadcastModalOpen}
-        onCancel={() => setBroadcastModalOpen(false)}
+        onCancel={() => {
+          setBroadcastModalOpen(false);
+          setUserSearchText('');
+        }}
         footer={null}
         destroyOnClose
         width={580}
@@ -1709,23 +1788,40 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
               const scope = getFieldValue('scope');
               if (scope === 'user') {
                 return (
-                  <Form.Item
-                    label="选择或输入目标用户名"
-                    name="targetUsername"
-                    rules={[{ required: true, message: '请选择或输入目标用户名' }]}
-                    extra="可从当前在线认证人员中直接点选，也可手动输入用户名或 UID。"
-                  >
-                    <Select
-                      showSearch
-                      allowClear
-                      placeholder="点选在线用户或直接输入用户名..."
-                      options={onlineUserOptions}
-                      filterOption={(input, option) =>
-                        (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
-                        (option?.value ?? '').toLowerCase().includes(input.toLowerCase())
-                      }
-                    />
-                  </Form.Item>
+                  <>
+                    <Form.Item name="targetUserId" hidden>
+                      <Input />
+                    </Form.Item>
+                    <Form.Item
+                      label="选择或输入目标用户名 / UID"
+                      name="targetUsername"
+                      rules={[{ required: true, message: '请选择或输入目标用户名或 UID' }]}
+                      extra="可直接从在线列表中点选，亦可在框内直接输入任意用户的用户名或数字 UID 发送。"
+                    >
+                      <Select
+                        showSearch
+                        allowClear
+                        placeholder="点选在线用户或直接输入用户名 / UID..."
+                        options={combinedUserOptions}
+                        onSearch={(val) => setUserSearchText(val)}
+                        onChange={(val, option: any) => {
+                          if (option && option.userId) {
+                            broadcastForm.setFieldsValue({ targetUserId: option.userId, targetUsername: option.value });
+                          } else {
+                            const isNum = /^\d+$/.test(String(val || '').trim());
+                            broadcastForm.setFieldsValue({
+                              targetUserId: isNum ? Number(val) : undefined,
+                              targetUsername: val,
+                            });
+                          }
+                        }}
+                        filterOption={(input, option) =>
+                          (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
+                          (option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+                        }
+                      />
+                    </Form.Item>
+                  </>
                 );
               }
               if (scope === 'session') {

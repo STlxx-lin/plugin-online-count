@@ -1,6 +1,8 @@
 export default {
   name: 'online_sessions',
   title: '在线会话',
+  category: 'system',
+  hidden: true,
   fields: [
     {
       name: 'id',

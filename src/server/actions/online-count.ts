@@ -7,23 +7,6 @@ import { BroadcastService } from '../services/broadcast.service';
 import { AuditLogService } from '../services/audit-log.service';
 import { CONFIG_KEYS } from '../constants';
 
-function parseJwtPayload(token: string): any {
-  try {
-    if (!token || typeof token !== 'string') return null;
-    const cleanToken = token.replace(/^Bearer\s+/i, '').replace(/^"|"$/g, '').trim();
-    const parts = cleanToken.split('.');
-    if (parts.length >= 2) {
-      let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-      while (b64.length % 4 !== 0) {
-        b64 += '=';
-      }
-      const payloadStr = Buffer.from(b64, 'base64').toString('utf-8');
-      return JSON.parse(payloadStr);
-    }
-  } catch {}
-  return null;
-}
-
 function getParams(ctx: Context): Record<string, any> {
   const query = ctx.query || ctx.request?.query || {};
   const actionParams = ctx.action?.params || {};
@@ -68,26 +51,15 @@ export function createOnlineCountResource(
           token = ctx.cookies.get('token') || ctx.cookies.get('SESSION') || '';
         }
 
-        let resolvedUserId = currentUser?.id || params.userId;
+        // 严格以中间件鉴权认证的 currentUser 为准，杜绝外部直接传参伪造身份
+        let finalUserId: number | null = null;
+        let finalUsername: string | null = null;
+        let finalNickname: string | null = null;
 
-        // 1. 如果没有 resolvedUserId，通过原生 Base64 解码 JWT Payload 获取 userId
-        if (!resolvedUserId && token) {
-          const payload = parseJwtPayload(token);
-          if (payload) {
-            resolvedUserId = payload.userId || payload.id || payload.sub;
-          }
-        }
-
-        // 2. 如果有了 userId 但还没有完整 user 对象，从数据库 users 表快速查出真实用户名与昵称
-        if (resolvedUserId && (!currentUser || !currentUser.username)) {
-          try {
-            const userRepo = ctx.db.getRepository('users');
-            if (userRepo) {
-              currentUser = await userRepo.findOne({
-                filter: { id: resolvedUserId },
-              });
-            }
-          } catch {}
+        if (currentUser?.id) {
+          finalUserId = Number(currentUser.id) || null;
+          finalUsername = currentUser.username || currentUser.email || `User_${currentUser.id}`;
+          finalNickname = currentUser.nickname || currentUser.username || finalUsername;
         }
 
         const ip = extractClientIp(ctx);
@@ -95,21 +67,17 @@ export function createOnlineCountResource(
         const currentPath = params.currentPath || '/';
 
         if (!token) {
-          if (currentUser?.id) {
-            token = `user_${currentUser.id}_${ip}`;
-          } else if (params.userId) {
-            token = `user_${params.userId}_${ip}`;
+          if (finalUserId) {
+            // 稳定 Token 生成策略：基于用户 ID 与浏览器 UA 特征指纹，杜绝因双栈网络 IPv4/IPv6 切换引发 Token 突变
+            const uaHash = Buffer.from(userAgent || 'client').toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
+            token = `user_${finalUserId}_${uaHash || 'stable'}`;
           } else {
             token = `anonymous_${ip}`;
           }
         }
 
-        const finalUserId = currentUser?.id || params.userId || null;
-        const finalUsername = currentUser?.username || currentUser?.email || params.username || (finalUserId ? `User_${finalUserId}` : null);
-        const finalNickname = currentUser?.nickname || currentUser?.username || params.nickname || finalUsername || null;
-
         // 如果是有效鉴权合法的超级管理员心跳，自动解除误踢状态，防止自杀式锁死
-        if (currentUser?.id === 1 && resolvedUserId === 1 && token) {
+        if (currentUser?.id === 1 && token) {
           sessionControlService.unmarkKicked(token);
         }
 
@@ -142,6 +110,7 @@ export function createOnlineCountResource(
         const pendingBroadcasts = broadcastService.getPendingForClient({
           sessionId: token,
           userId: finalUserId,
+          username: finalUsername,
           seenMessageIds,
         });
 
@@ -198,6 +167,7 @@ export function createOnlineCountResource(
       kickout: async (ctx: Context, next: Next) => {
         const params = getParams(ctx);
         const { token, userId, reason = '已被系统管理员强制下线' } = params;
+        const relatedTokens = Array.isArray(params.relatedTokens) ? params.relatedTokens : [];
 
         if (!token && !userId) {
           ctx.throw(400, 'token or userId is required for kickout');
@@ -207,6 +177,20 @@ export function createOnlineCountResource(
         if (token) {
           const sessionInfo = trackerService.getSession(String(token));
           success = await sessionControlService.kickoutToken(String(token), String(reason));
+
+          // 级联踢出关联的双栈 Token，确保同终端彻底下线
+          const allTokensToKick = new Set<string>([String(token), ...relatedTokens]);
+          if (sessionInfo?.relatedTokens) {
+            sessionInfo.relatedTokens.forEach((t) => allTokensToKick.add(t));
+          }
+          for (const t of allTokensToKick) {
+            if (t !== String(token)) {
+              await sessionControlService.kickoutToken(t, String(reason));
+            }
+          }
+
+          await trackerService.removeSession(String(token));
+
           if (sessionInfo) {
             auditLogService.recordSessionEnd(ctx.db, {
               sessionId: sessionInfo.token,
@@ -234,7 +218,7 @@ export function createOnlineCountResource(
           currentReqToken = authHeader.replace(/^Bearer\s+/i, '').trim();
         }
         const isSelf = Boolean(
-          (token && currentReqToken && token === currentReqToken) ||
+          (token && currentReqToken && (token === currentReqToken || relatedTokens.includes(currentReqToken))) ||
           (userId && ctx.state.currentUser?.id && Number(userId) === Number(ctx.state.currentUser.id))
         );
 
@@ -247,9 +231,81 @@ export function createOnlineCountResource(
        */
       sendBroadcast: async (ctx: Context, next: Next) => {
         const params = getParams(ctx);
-        const { title, content, mode, scope, targetUserId, targetUsername, targetSessionId, type, ttlMinutes } = params;
+        const { title, content, mode, scope, type, ttlMinutes } = params;
+        let targetUserId = params.targetUserId ? Number(params.targetUserId) : null;
+        let targetUsername = params.targetUsername ? String(params.targetUsername).trim() : null;
+        const targetSessionId = params.targetSessionId ? String(params.targetSessionId).trim() : null;
+
         if (!content) {
-          ctx.throw(400, 'content is required');
+          ctx.throw(400, '通知内容不能为空 (content is required)');
+        }
+
+        if (scope === 'user') {
+          if (!targetUserId && !targetUsername) {
+            ctx.throw(400, '指定用户通知必须提供目标用户标识（用户名或 UID）');
+          }
+
+          // 如果没有 targetUserId，尝试根据 targetUsername (或可能输入的 UID) 反查 users 表
+          if (!targetUserId && targetUsername) {
+            try {
+              const userRepo = ctx.db.getRepository('users');
+              if (userRepo) {
+                const isNum = /^\d+$/.test(targetUsername);
+                const userRecord = await userRepo.findOne({
+                  filter: {
+                    $or: [
+                      { username: targetUsername },
+                      ...(isNum ? [{ id: Number(targetUsername) }] : []),
+                    ],
+                  },
+                });
+                if (userRecord) {
+                  targetUserId = Number(userRecord.id);
+                  targetUsername = userRecord.username || targetUsername;
+                }
+              }
+            } catch (err) {
+              console.warn('[OnlineCount] 通过 users 表反查 targetUser 异常:', err);
+            }
+
+            // 若数据库没有匹配到，再尝试从 trackerService 在线用户列表中匹配
+            if (!targetUserId) {
+              try {
+                const onlineUsers = await trackerService.getOnlineUsersList();
+                const matched = onlineUsers.find(
+                  (u: any) =>
+                    String(u.username).toLowerCase() === targetUsername?.toLowerCase() ||
+                    String(u.userId) === targetUsername ||
+                    String(u.nickname).toLowerCase() === targetUsername?.toLowerCase()
+                );
+                if (matched) {
+                  targetUserId = Number(matched.userId);
+                  targetUsername = matched.username || targetUsername;
+                }
+              } catch (err) {
+                console.warn('[OnlineCount] 通过在线列表反查 targetUser 异常:', err);
+              }
+            }
+          }
+
+          // 如果有 targetUserId 但缺少 targetUsername，尝试补全 targetUsername
+          if (targetUserId && !targetUsername) {
+            try {
+              const userRepo = ctx.db.getRepository('users');
+              if (userRepo) {
+                const userRecord = await userRepo.findOne({ filterByTk: targetUserId });
+                if (userRecord && userRecord.username) {
+                  targetUsername = userRecord.username;
+                }
+              }
+            } catch (err) {
+              console.warn('[OnlineCount] 通过 UID 反查 username 异常:', err);
+            }
+          }
+        }
+
+        if (scope === 'session' && !targetSessionId) {
+          ctx.throw(400, '指定会话通知必须提供目标会话 Token');
         }
 
         const msg = await broadcastService.publish(
@@ -258,9 +314,9 @@ export function createOnlineCountResource(
             content: String(content),
             mode: mode || 'notification',
             scope: scope || 'all',
-            targetUserId: targetUserId ? Number(targetUserId) : null,
-            targetUsername: targetUsername || null,
-            targetSessionId: targetSessionId || null,
+            targetUserId,
+            targetUsername,
+            targetSessionId,
             type: type || 'info',
             ttlMinutes: ttlMinutes ? Number(ttlMinutes) : 15,
           },

@@ -1,6 +1,8 @@
 export default {
   name: 'online_audit_logs',
   title: '会话审计日志',
+  category: 'system',
+  hidden: true,
   fields: [
     {
       name: 'id',

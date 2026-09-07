@@ -287,11 +287,14 @@ export class BroadcastService {
    */
   getPendingForClient(params: {
     sessionId: string;
-    userId?: number | null;
+    userId?: number | string | null;
+    username?: string | null;
     seenMessageIds?: string[];
   }): BroadcastMessage[] {
     const now = Date.now();
     const seenSet = new Set(params.seenMessageIds || []);
+    const clientUserId = params.userId ? Number(params.userId) : null;
+    const clientUsername = params.username ? String(params.username).trim().toLowerCase() : null;
 
     return this.messages.filter((msg) => {
       if (msg.status && msg.status !== 'active') return false;
@@ -299,8 +302,19 @@ export class BroadcastService {
       if (seenSet.has(msg.id)) return false;
 
       if (msg.scope === 'all') return true;
-      if (msg.scope === 'user' && params.userId && msg.targetUserId === params.userId) {
-        return true;
+      if (msg.scope === 'user') {
+        const targetUserId = msg.targetUserId ? Number(msg.targetUserId) : null;
+        if (clientUserId && targetUserId && clientUserId === targetUserId) {
+          return true;
+        }
+        if (
+          clientUsername &&
+          msg.targetUsername &&
+          clientUsername === String(msg.targetUsername).trim().toLowerCase()
+        ) {
+          return true;
+        }
+        return false;
       }
       if (msg.scope === 'session' && params.sessionId && msg.targetSessionId === params.sessionId) {
         return true;

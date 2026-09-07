@@ -60,13 +60,58 @@ export function parseUserAgent(ua = ''): DeviceInfo {
   return { browser, os, device };
 }
 
+export function isIPv4(ip = ''): boolean {
+  if (!ip) return false;
+  return /^(\d{1,3}\.){3}\d{1,3}$/.test(ip.trim());
+}
+
+export function isIPv6(ip = ''): boolean {
+  if (!ip) return false;
+  return ip.includes(':');
+}
+
+/**
+ * 规范化客户端 IP 地址，剥离端口与 ::ffff: 前缀，统一双栈格式
+ */
+export function normalizeIp(rawIp = ''): string {
+  if (!rawIp) return '127.0.0.1';
+  let ip = String(rawIp).trim();
+
+  // 剥离可能包含的外层括号与端口号 (如 [::1]:8080 或 192.168.1.1:8080)
+  if (ip.startsWith('[') && ip.includes(']')) {
+    const endBracket = ip.indexOf(']');
+    ip = ip.substring(1, endBracket);
+  } else if (ip.includes(':') && ip.indexOf(':') === ip.lastIndexOf(':')) {
+    // 只有单个冒号，属于 IPv4 带端口 (如 127.0.0.1:3000)
+    ip = ip.split(':')[0];
+  }
+
+  // 剥离 IPv4-mapped IPv6 前缀 (如 ::ffff:192.168.1.1 或 ::ffff:127.0.0.1)
+  if (ip.toLowerCase().startsWith('::ffff:')) {
+    const v4Candidate = ip.slice(7);
+    if (isIPv4(v4Candidate)) {
+      return v4Candidate;
+    }
+  }
+
+  // 本地环回地址规范化
+  if (ip === '::1' || ip === '0:0:0:0:0:0:0:1') {
+    return '127.0.0.1 (::1)';
+  }
+
+  return ip;
+}
+
 export function extractClientIp(ctx: any): string {
   if (!ctx) return '127.0.0.1';
   const headers = ctx.headers || ctx.req?.headers || {};
   const forwarded = headers['x-forwarded-for'];
+  let rawIp = '';
   if (forwarded) {
     const ipStr = Array.isArray(forwarded) ? forwarded[0] : String(forwarded);
-    return ipStr.split(',')[0].trim();
+    rawIp = ipStr.split(',')[0].trim();
+  } else {
+    rawIp = headers['x-real-ip'] || ctx.ip || ctx.socket?.remoteAddress || '127.0.0.1';
   }
-  return headers['x-real-ip'] || ctx.ip || ctx.socket?.remoteAddress || '127.0.0.1';
+  return normalizeIp(rawIp);
 }

@@ -1,9 +1,6 @@
 import { useApp as useAppV2 } from '@nocobase/client-v2';
 
 export function useAPIClient(): any {
-  if (typeof window !== 'undefined' && (window as any).__nocobase_api_client__) {
-    return (window as any).__nocobase_api_client__;
-  }
 
   try {
     if (typeof useAppV2 === 'function') {

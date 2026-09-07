@@ -1,6 +1,8 @@
 export default {
   name: 'online_configs',
   title: '在线统计插件配置',
+  category: 'system',
+  hidden: true,
   fields: [
     {
       name: 'id',

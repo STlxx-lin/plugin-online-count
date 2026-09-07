@@ -122,20 +122,6 @@ async function sendHeartbeatRequest(api: any, data: any, token?: string) {
     }
   }
 
-  // 2. 检查全局注入的 APIClient
-  if (typeof window !== 'undefined' && (window as any).__nocobase_api_client__) {
-    try {
-      const res = await (window as any).__nocobase_api_client__.request({
-        url: 'onlineCount:heartbeat',
-        method: 'POST',
-        data,
-      });
-      return res?.data?.data || res?.data;
-    } catch (err: any) {
-      if (err?.response) throw err;
-    }
-  }
-
   // 3. 原生 fetch 强力兜底
   if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
     const headers: Record<string, string> = {
@@ -402,20 +388,23 @@ export function useOnlineHeartbeat(api: any) {
 
     const handleActivity = () => {
       const now = Date.now();
-      if (now - lastActivityRef.current > 1000) {
+      if (now - lastActivityRef.current > 5000) {
         lastActivityRef.current = now;
       }
     };
 
-    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart'];
+    // 精简监听事件类型，仅在真实键鼠交互时更新时间，绝不阻断任何 DOM 行为
+    const activityEvents = ['pointerdown', 'keydown'];
     activityEvents.forEach((event) => {
-      window.addEventListener(event, handleActivity, { passive: true });
+      try {
+        window.addEventListener(event, handleActivity, { passive: true, capture: false });
+      } catch {}
     });
 
     // 挂载时立即执行一次心跳上报
     sendHeartbeat();
     heartbeatTimer = setInterval(sendHeartbeat, intervalSec * 1000);
-    idleCheckTimer = setInterval(checkIdle, 5000);
+    idleCheckTimer = setInterval(checkIdle, 15000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {

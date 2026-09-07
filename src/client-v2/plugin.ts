@@ -11,10 +11,6 @@ const V2OnlineCountPageWrapper: React.FC = () => {
 
 export class PluginOnlineCountClientV2 extends Plugin {
   async load() {
-    if (typeof window !== 'undefined' && this.app?.apiClient) {
-      (window as any).__nocobase_api_client__ = this.app.apiClient;
-    }
-
     this.app.addProvider(GlobalHeartbeatProviderV2, { api: this.app.apiClient });
 
     const manager = this.app.pluginSettingsManager as any;

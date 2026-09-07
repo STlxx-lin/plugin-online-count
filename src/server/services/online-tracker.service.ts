@@ -3,7 +3,7 @@ import { CronJob } from 'cron';
 import { OnlineConfigService } from './online-config.service';
 import { SessionControlService } from './session-control.service';
 import { CONFIG_KEYS } from '../constants';
-import { parseUserAgent } from '../utils/device-parser';
+import { parseUserAgent, isIPv4, isIPv6, normalizeIp } from '../utils/device-parser';
 import { AuditLogService } from './audit-log.service';
 
 export interface HeartbeatPayload {
@@ -23,6 +23,10 @@ export interface OnlineSessionItem {
   username: string;
   nickname: string;
   ip: string;
+  ipv4?: string;
+  ipv6?: string;
+  isDualStack?: boolean;
+  relatedTokens?: string[];
   userAgent: string;
   device: string;
   os: string;
@@ -129,18 +133,44 @@ export class OnlineTrackerService {
 
     const now = new Date();
     const { browser, os, device } = parseUserAgent(userAgent);
+    const cleanIp = normalizeIp(ip);
+    const ipIsV4 = isIPv4(cleanIp);
+    const ipIsV6 = isIPv6(cleanIp);
 
-    // 同设备旧会话与登录前访客会话自动接替淘汰
+    // 同设备旧会话与登录前访客会话自动接替淘汰 / 双栈继承
+    let inheritedIpv4: string | undefined = ipIsV4 ? cleanIp : undefined;
+    let inheritedIpv6: string | undefined = ipIsV6 ? cleanIp : undefined;
+    const accumulatedTokens = new Set<string>();
+
     if (userId) {
       for (const [otherToken, s] of this.memorySessions.entries()) {
         if (otherToken !== token && !s.isKicked) {
-          // 同一用户在相同 IP 和终端类型下，旧 token 视为已被新会话接替，自动清理
-          const isSameUserDevice = String(s.userId) === String(userId) && s.ip === ip && s.device === device;
+          // 同一认证用户在相同终端设备下，判定为同一设备（包括 IPv4 与 IPv6 双栈或 IP 漂移切换）
+          const isSameUserDevice =
+            String(s.userId) === String(userId) &&
+            s.device === device &&
+            (s.os === os || s.browser === browser || !s.os || !os);
+
           if (isSameUserDevice) {
+            if (s.ipv4) inheritedIpv4 = inheritedIpv4 || s.ipv4;
+            else if (isIPv4(s.ip)) inheritedIpv4 = inheritedIpv4 || s.ip;
+
+            if (s.ipv6) inheritedIpv6 = inheritedIpv6 || s.ipv6;
+            else if (isIPv6(s.ip)) inheritedIpv6 = inheritedIpv6 || s.ip;
+
+            accumulatedTokens.add(otherToken);
+            if (Array.isArray(s.relatedTokens)) {
+              s.relatedTokens.forEach((t) => accumulatedTokens.add(t));
+            }
+
+            // 清理已被新会话接替的旧重复 token，避免在内存中分裂为两个并存会话
             this.memorySessions.delete(otherToken);
           }
-          // 同一 IP 下的未登录访客（如 /signin 登录页），在认证用户上线后自动合并清理
-          const isGuestOnSameIp = !s.userId && s.ip === ip;
+
+          // 同一 IP（或其对应双栈 IP）下的未登录访客，在认证用户上线后自动合并清理
+          const isGuestOnSameIp =
+            !s.userId &&
+            (s.ip === cleanIp || s.ipv4 === cleanIp || s.ipv6 === cleanIp);
           if (isGuestOnSameIp) {
             this.memorySessions.delete(otherToken);
           }
@@ -150,12 +180,17 @@ export class OnlineTrackerService {
 
     let session = this.memorySessions.get(token);
     if (!session) {
+      const isDual = Boolean(inheritedIpv4 && inheritedIpv6);
       session = {
         token,
         userId: userId || null,
         username: username || (userId ? `User_${userId}` : '访客'),
         nickname: nickname || username || '访客',
-        ip,
+        ip: cleanIp,
+        ipv4: inheritedIpv4,
+        ipv6: inheritedIpv6,
+        isDualStack: isDual,
+        relatedTokens: Array.from(accumulatedTokens),
         userAgent,
         device,
         os,
@@ -173,7 +208,16 @@ export class OnlineTrackerService {
     } else {
       session.lastActiveAt = now;
       session.currentPath = currentPath;
-      session.ip = ip;
+      session.ip = cleanIp;
+      if (ipIsV4) session.ipv4 = cleanIp;
+      if (ipIsV6) session.ipv6 = cleanIp;
+      session.isDualStack = Boolean(session.ipv4 && session.ipv6);
+
+      if (accumulatedTokens.size > 0) {
+        const mergedTokens = new Set([...(session.relatedTokens || []), ...accumulatedTokens]);
+        session.relatedTokens = Array.from(mergedTokens);
+      }
+
       if (userId) {
         session.userId = userId;
         if (username && username !== '访客') {
@@ -208,7 +252,7 @@ export class OnlineTrackerService {
     const now = Date.now();
 
     const activeUsers = new Set<string>();
-    const activeGuestIps = new Set<string>();
+    const activeGuestDevices = new Set<string>();
     const userIps = new Set<string>();
     let totalDurationMs = 0;
     let validSessionCount = 0;
@@ -221,21 +265,29 @@ export class OnlineTrackerService {
         if (session.userId) {
           activeUsers.add(String(session.userId));
           if (session.ip) userIps.add(session.ip);
+          if (session.ipv4) userIps.add(session.ipv4);
+          if (session.ipv6) userIps.add(session.ipv6);
         } else {
-          if (session.ip) activeGuestIps.add(session.ip);
+          // 访客如果具有双栈 IP，以主 IP 或终端环境作为唯一聚合键，避免双栈访客被计算为 2 人
+          const guestKey = (session.ipv4 || session.ipv6 || session.ip) + `_${session.device}`;
+          activeGuestDevices.add(guestKey);
         }
         totalDurationMs += now - loginTime;
         validSessionCount++;
       }
     }
 
-    // 已登录的 IP 自动从访客集合剔除（同一自然人登录前后的接替）
+    // 过滤掉同 IP 已登录用户的访客残留
     for (const uip of userIps) {
-      activeGuestIps.delete(uip);
+      for (const gKey of activeGuestDevices) {
+        if (gKey.startsWith(uip)) {
+          activeGuestDevices.delete(gKey);
+        }
+      }
     }
 
     const userOnline = activeUsers.size;
-    const guestOnline = activeGuestIps.size;
+    const guestOnline = activeGuestDevices.size;
     const totalOnline = userOnline + guestOnline;
     const avgDurationMinutes = validSessionCount > 0 ? Math.round(totalDurationMs / validSessionCount / 60000) : 0;
 
@@ -273,7 +325,7 @@ export class OnlineTrackerService {
   }
 
   /**
-   * 获取在线会话列表
+   * 获取在线会话列表（按用户与终端智能去重并聚合双栈 IPv4 / IPv6）
    */
   async listSessions(params: {
     page?: number;
@@ -295,17 +347,19 @@ export class OnlineTrackerService {
     const rawDev = params.device;
     const filterDev = (rawDev && rawDev !== 'undefined' && rawDev !== 'null') ? String(rawDev).trim() : '';
 
-    // 1. 收集当前有效的认证用户 IP 集合
+    // 1. 收集当前有效的认证用户 IP 集合（包含双栈 IP）
     const authenticatedIps = new Set<string>();
     for (const s of this.memorySessions.values()) {
       if (s.isKicked) continue;
       const lastActive = new Date(s.lastActiveAt).getTime();
-      if (now - lastActive <= thresholdSec * 1000 && s.userId && s.ip) {
-        authenticatedIps.add(s.ip);
+      if (now - lastActive <= thresholdSec * 1000 && s.userId) {
+        if (s.ip) authenticatedIps.add(s.ip);
+        if (s.ipv4) authenticatedIps.add(s.ipv4);
+        if (s.ipv6) authenticatedIps.add(s.ipv6);
       }
     }
 
-    // 2. 按用户/访客与终端维度去重，只保留最新活跃的一条
+    // 2. 按用户与终端维度去重，解决双栈网络同用户分裂成两条记录的问题
     const dedupMap = new Map<string, any>();
     for (const session of this.memorySessions.values()) {
       if (session.isKicked) continue;
@@ -314,30 +368,69 @@ export class OnlineTrackerService {
       if (now - lastActiveTime > thresholdSec * 1000) continue;
 
       // 如果是匿名访客，且该 IP 已经存在认证用户在线，说明是登录前残留，自动合并排除
-      if (!session.userId && session.ip && authenticatedIps.has(session.ip)) {
+      if (
+        !session.userId &&
+        (authenticatedIps.has(session.ip) ||
+          (session.ipv4 && authenticatedIps.has(session.ipv4)) ||
+          (session.ipv6 && authenticatedIps.has(session.ipv6)))
+      ) {
         continue;
       }
 
-      // 同一用户在相同 IP 和终端类型下，只保留最后活跃时间最新的一条会话
+      // 同一认证用户在相同终端设备下聚合为唯一一条展示记录
       const dedupKey = session.userId
-        ? `user_${session.userId}_${session.ip || ''}_${session.device || ''}`
-        : `guest_${session.ip || ''}_${session.device || ''}`;
+        ? `user_${session.userId}_${session.device || 'Desktop'}`
+        : `guest_${session.ipv4 || session.ipv6 || session.ip || ''}_${session.device || ''}`;
 
       const existing = dedupMap.get(dedupKey);
-      if (!existing || new Date(session.lastActiveAt).getTime() > new Date(existing.lastActiveAt).getTime()) {
-        dedupMap.set(dedupKey, session);
+      if (!existing) {
+        dedupMap.set(dedupKey, {
+          ...session,
+          relatedTokens: Array.from(new Set([session.token, ...(session.relatedTokens || [])])),
+        });
+      } else {
+        // 合并双栈 IP 与关联 Token，并以最新活跃时间为准
+        const newer =
+          new Date(session.lastActiveAt).getTime() > new Date(existing.lastActiveAt).getTime()
+            ? session
+            : existing;
+        const older = newer === session ? existing : session;
+
+        const mergedIpv4 =
+          newer.ipv4 || older.ipv4 || (isIPv4(newer.ip) ? newer.ip : (isIPv4(older.ip) ? older.ip : undefined));
+        const mergedIpv6 =
+          newer.ipv6 || older.ipv6 || (isIPv6(newer.ip) ? newer.ip : (isIPv6(older.ip) ? older.ip : undefined));
+
+        const allTokens = Array.from(
+          new Set([
+            newer.token,
+            older.token,
+            ...(newer.relatedTokens || []),
+            ...(older.relatedTokens || []),
+          ])
+        );
+
+        dedupMap.set(dedupKey, {
+          ...newer,
+          ipv4: mergedIpv4,
+          ipv6: mergedIpv6,
+          isDualStack: Boolean(mergedIpv4 && mergedIpv6),
+          relatedTokens: allTokens,
+        });
       }
     }
 
     const activeList: any[] = [];
     for (const session of dedupMap.values()) {
-      // 关键词过滤
+      // 关键词过滤（支持根据用户名、昵称、主 IP、IPv4、IPv6 及当前路径检索）
       if (kw) {
         const matchName = String(session.username || '').toLowerCase().includes(kw);
         const matchNick = String(session.nickname || '').toLowerCase().includes(kw);
         const matchIp = String(session.ip || '').toLowerCase().includes(kw);
+        const matchIpv4 = String(session.ipv4 || '').toLowerCase().includes(kw);
+        const matchIpv6 = String(session.ipv6 || '').toLowerCase().includes(kw);
         const matchPath = String(session.currentPath || '').toLowerCase().includes(kw);
-        if (!matchName && !matchNick && !matchIp && !matchPath) continue;
+        if (!matchName && !matchNick && !matchIp && !matchIpv4 && !matchIpv6 && !matchPath) continue;
       }
 
       // 设备过滤
@@ -353,6 +446,7 @@ export class OnlineTrackerService {
     const start = (page - 1) * pageSize;
     const rows = activeList.slice(start, start + pageSize).map((s) => ({
       ...s,
+      isDualStack: Boolean(s.ipv4 && s.ipv6),
       durationMinutes: Math.max(1, Math.round((now - new Date(s.loginAt).getTime()) / 60000)),
       idleSeconds: Math.max(0, Math.round((now - new Date(s.lastActiveAt).getTime()) / 1000)),
     }));
@@ -366,15 +460,19 @@ export class OnlineTrackerService {
   }
 
   /**
-   * 获取当前在线的所有认证用户列表（供定向广播下拉选择）
+   * 获取当前在线的所有认证用户列表（供定向广播下拉选择，带双栈信息）
    */
   getOnlineUsersList(): Array<{
     userId: number;
     username: string;
     nickname: string;
     ip: string;
+    ipv4?: string;
+    ipv6?: string;
+    isDualStack?: boolean;
     device: string;
     token: string;
+    relatedTokens?: string[];
     lastActiveAt: Date;
   }> {
     const thresholdSec = this.configService.getNumber(CONFIG_KEYS.OFFLINE_THRESHOLD, 90);
@@ -387,13 +485,26 @@ export class OnlineTrackerService {
       if (now - lastActiveTime <= thresholdSec * 1000) {
         const existing = userMap.get(session.userId);
         if (!existing || new Date(session.lastActiveAt).getTime() > new Date(existing.lastActiveAt).getTime()) {
+          const mergedIpv4 = session.ipv4 || existing?.ipv4 || (isIPv4(session.ip) ? session.ip : existing?.ip && isIPv4(existing.ip) ? existing.ip : undefined);
+          const mergedIpv6 = session.ipv6 || existing?.ipv6 || (isIPv6(session.ip) ? session.ip : existing?.ip && isIPv6(existing.ip) ? existing.ip : undefined);
+          const allTokens = Array.from(new Set([
+            session.token,
+            ...(session.relatedTokens || []),
+            ...(existing?.relatedTokens || []),
+            ...(existing?.token ? [existing.token] : []),
+          ]));
+
           userMap.set(session.userId, {
             userId: Number(session.userId),
             username: session.username,
             nickname: session.nickname || session.username,
             ip: session.ip,
+            ipv4: mergedIpv4,
+            ipv6: mergedIpv6,
+            isDualStack: Boolean(mergedIpv4 && mergedIpv6),
             device: session.device,
             token: session.token,
+            relatedTokens: allTokens,
             lastActiveAt: session.lastActiveAt,
           });
         }
@@ -494,6 +605,23 @@ export class OnlineTrackerService {
    */
   getSession(token: string): OnlineSessionItem | undefined {
     return this.memorySessions.get(token);
+  }
+
+  /**
+   * 移除并彻底清理指定 Token 及其级联的关联双栈 Token
+   */
+  async removeSession(token: string): Promise<string[]> {
+    const session = this.memorySessions.get(token);
+    const tokensToRemove = new Set<string>([token]);
+    if (session?.relatedTokens) {
+      session.relatedTokens.forEach((t) => tokensToRemove.add(t));
+    }
+
+    for (const t of tokensToRemove) {
+      this.memorySessions.delete(t);
+    }
+
+    return Array.from(tokensToRemove);
   }
 
   /**

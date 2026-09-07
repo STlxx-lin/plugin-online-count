@@ -1,6 +1,8 @@
 export default {
   name: 'online_history_stats',
   title: '在线人数历史统计',
+  category: 'system',
+  hidden: true,
   fields: [
     {
       name: 'id',

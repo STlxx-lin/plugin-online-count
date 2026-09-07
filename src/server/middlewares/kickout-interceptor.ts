@@ -3,13 +3,17 @@ import { SessionControlService } from '../services/session-control.service';
 
 export function createKickoutInterceptor(sessionControlService: SessionControlService) {
   return async function kickoutMiddleware(ctx: Context, next: Next) {
+    if (!ctx || !ctx.headers) {
+      return await next();
+    }
+
     // 提取 Token
     let token = '';
     const authHeader = ctx.headers['authorization'] || ctx.headers['Authorization'];
     if (authHeader && typeof authHeader === 'string') {
       token = authHeader.replace(/^Bearer\s+/i, '').trim();
     }
-    if (!token && ctx.cookies) {
+    if (!token && ctx.cookies && typeof ctx.cookies.get === 'function') {
       token = ctx.cookies.get('token') || ctx.cookies.get('SESSION') || '';
     }
 

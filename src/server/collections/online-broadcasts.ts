@@ -1,6 +1,8 @@
 export default {
   name: 'online_broadcasts',
   title: '即时广播通知',
+  category: 'system',
+  hidden: true,
   fields: [
     {
       name: 'id',
