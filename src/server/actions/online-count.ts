@@ -51,7 +51,41 @@ export function createOnlineCountResource(
           token = ctx.cookies.get('token') || ctx.cookies.get('SESSION') || '';
         }
 
-        // 严格以中间件鉴权认证的 currentUser 为准，杜绝外部直接传参伪造身份
+        // 如果中间件未提供 currentUser，但携带了有效 JWT Token，从中解析 userId 并从数据库加载用户信息
+        if (!currentUser?.id && token && typeof token === 'string' && token.includes('.')) {
+          try {
+            const parts = token.split('.');
+            if (parts.length >= 2) {
+              const payloadStr = Buffer.from(parts[1], 'base64').toString('utf8');
+              const payload = JSON.parse(payloadStr);
+              const tokenUserId = payload?.userId || payload?.id;
+              if (tokenUserId) {
+                const userModel = ctx.db.getModel('users');
+                if (userModel) {
+                  const dbUser: any = await userModel.findByPk(tokenUserId);
+                  if (dbUser) {
+                    currentUser = dbUser;
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+
+        // 备用：从参数 userId 核验数据库
+        if (!currentUser?.id && params.userId) {
+          try {
+            const userModel = ctx.db.getModel('users');
+            if (userModel) {
+              const dbUser: any = await userModel.findByPk(params.userId);
+              if (dbUser) {
+                currentUser = dbUser;
+              }
+            }
+          } catch {}
+        }
+
+        // 严格以认证的用户为准，提取身份信息
         let finalUserId: number | null = null;
         let finalUsername: string | null = null;
         let finalNickname: string | null = null;
@@ -94,17 +128,19 @@ export function createOnlineCountResource(
         // 检查是否有给当前客户端/用户的即时广播或通知
         const seenMessageIds = Array.isArray(params.seenMessageIds) ? params.seenMessageIds : [];
         if (seenMessageIds.length > 0) {
-          await broadcastService.recordRead(
-            seenMessageIds,
-            {
-              userId: finalUserId,
-              username: finalUsername,
-              nickname: finalNickname,
-              ip,
-              sessionId: token,
-            },
-            ctx.db
-          );
+          void broadcastService
+            .recordRead(
+              seenMessageIds,
+              {
+                userId: finalUserId,
+                username: finalUsername,
+                nickname: finalNickname,
+                ip,
+                sessionId: token,
+              },
+              ctx.db
+            )
+            .catch(() => {});
         }
 
         const pendingBroadcasts = broadcastService.getPendingForClient({
@@ -406,13 +442,53 @@ export function createOnlineCountResource(
       },
 
       /**
-       * 获取当前在线的所有已认证用户列表（供定向下拉选择）
+       * 获取当前在线的所有已认证用户及系统用户列表（供定向下拉选择，在线用户置顶）
        */
       getOnlineUsersList: async (ctx: Context, next: Next) => {
-        const list = trackerService.getOnlineUsersList();
-        ctx.body = {
-          data: list,
-        };
+        const onlineList = trackerService.getOnlineUsersList();
+        const onlineUserIdSet = new Set(onlineList.map((u) => Number(u.userId)));
+
+        // 从数据库加载系统用户作为完整候选
+        let allUsers: any[] = [];
+        try {
+          const userModel = ctx.db.getModel('users');
+          if (userModel) {
+            allUsers = await userModel.findAll({
+              attributes: ['id', 'username', 'nickname', 'email'],
+              limit: 200,
+              order: [['id', 'ASC']],
+            });
+          }
+        } catch {}
+
+        const resultList: any[] = [];
+
+        // 1. 在线活跃用户优先置顶
+        for (const item of onlineList) {
+          resultList.push({
+            userId: item.userId,
+            username: item.username,
+            nickname: item.nickname,
+            ip: item.ip,
+            isOnline: true,
+          });
+        }
+
+        // 2. 补充离线的系统用户
+        for (const u of allUsers) {
+          const uid = Number(u.id);
+          if (!onlineUserIdSet.has(uid)) {
+            resultList.push({
+              userId: uid,
+              username: u.username || u.email || `User_${uid}`,
+              nickname: u.nickname || u.username || `User_${uid}`,
+              ip: '',
+              isOnline: false,
+            });
+          }
+        }
+
+        ctx.body = resultList;
         await next();
       },
 

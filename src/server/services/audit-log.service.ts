@@ -31,8 +31,8 @@ export class AuditLogService {
    */
   async recordSessionEnd(db: Database, params: RecordSessionEndParams): Promise<void> {
     try {
-      const repo = db.getRepository('online_audit_logs');
-      if (!repo) return;
+      const model = db.getModel('online_audit_logs');
+      if (!model) return;
 
       const now = new Date();
       let loginDate = params.loginAt ? new Date(params.loginAt) : (params.lastActiveAt ? new Date(params.lastActiveAt) : now);
@@ -42,22 +42,20 @@ export class AuditLogService {
 
       const durationSeconds = Math.max(0, Math.round((now.getTime() - loginDate.getTime()) / 1000));
 
-      await repo.create({
-        values: {
-          sessionId: params.sessionId || '',
-          userId: params.userId || null,
-          username: params.username || (params.userId ? `User #${params.userId}` : '访客 (Guest)'),
-          nickname: params.nickname || (params.userId ? '' : '访客'),
-          ip: params.ip || '127.0.0.1',
-          device: params.device || 'Desktop',
-          os: params.os || 'Unknown',
-          browser: params.browser || 'Unknown',
-          loginAt: loginDate,
-          logoutAt: now,
-          durationSeconds,
-          terminationReason: params.terminationReason,
-          detail: params.detail || '',
-        },
+      await model.create({
+        sessionId: params.sessionId || '',
+        userId: params.userId || null,
+        username: params.username || (params.userId ? `User #${params.userId}` : '访客 (Guest)'),
+        nickname: params.nickname || (params.userId ? '' : '访客'),
+        ip: params.ip || '127.0.0.1',
+        device: params.device || 'Desktop',
+        os: params.os || 'Unknown',
+        browser: params.browser || 'Unknown',
+        loginAt: loginDate,
+        logoutAt: now,
+        durationSeconds,
+        terminationReason: params.terminationReason,
+        detail: params.detail || '',
       });
     } catch (err: any) {
       // 避免审计写入影响主业务流程
@@ -77,28 +75,28 @@ export class AuditLogService {
       terminationReason?: string;
     } = {}
   ) {
-    const repo = db.getRepository('online_audit_logs');
-    if (!repo) return { rows: [], count: 0, page: 1, pageSize: 20 };
+    const model = db.getModel('online_audit_logs');
+    if (!model) return { rows: [], count: 0, page: 1, pageSize: 20 };
 
     const page = Math.max(1, Number(options.page) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(options.pageSize) || 20));
 
-    const filter: any = {};
+    const where: any = {};
     if (options.username && options.username.trim()) {
-      filter[Op.or] = [
+      where[Op.or] = [
         { username: { [Op.like]: `%${options.username.trim()}%` } },
         { nickname: { [Op.like]: `%${options.username.trim()}%` } },
       ];
     }
     if (options.terminationReason && options.terminationReason.trim()) {
-      filter.terminationReason = options.terminationReason.trim();
+      where.terminationReason = options.terminationReason.trim();
     }
 
-    const [rows, count] = await repo.findAndCount({
-      filter,
+    const { rows, count } = await model.findAndCountAll({
+      where,
       offset: (page - 1) * pageSize,
       limit: pageSize,
-      sort: ['-logoutAt'],
+      order: [['logoutAt', 'DESC']],
     });
 
     return {
@@ -114,12 +112,12 @@ export class AuditLogService {
    */
   async cleanupOldLogs(db: Database, retentionDays = 30): Promise<number> {
     try {
-      const repo = db.getRepository('online_audit_logs');
-      if (!repo) return 0;
+      const model = db.getModel('online_audit_logs');
+      if (!model) return 0;
 
       const expireThreshold = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
-      const deletedCount = await repo.destroy({
-        filter: {
+      const deletedCount = await model.destroy({
+        where: {
           logoutAt: {
             [Op.lt]: expireThreshold,
           },

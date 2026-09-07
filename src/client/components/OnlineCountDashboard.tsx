@@ -276,14 +276,35 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
     }
   };
 
-  // 获取在线认证用户选项
+  // 获取在线认证及系统用户选项
   const fetchOnlineUsersList = async () => {
     if (!api) return;
     try {
       const res = await api.request({ url: 'onlineCount:getOnlineUsersList' });
-      const list = res?.data?.data || res?.data || [];
+      let list: any = res?.data;
+      while (list && list.data && !Array.isArray(list)) {
+        list = list.data;
+      }
+      if (!Array.isArray(list)) list = [];
+
+      // 若后端尚未返回在线会话，从当前 sessions 状态进行兜底补充
+      if (sessions && sessions.length > 0) {
+        const existUserIds = new Set(list.map((u: any) => Number(u.userId)));
+        sessions.forEach((s: any) => {
+          if (s.userId && !existUserIds.has(Number(s.userId))) {
+            existUserIds.add(Number(s.userId));
+            list.unshift({
+              userId: Number(s.userId),
+              username: s.username,
+              nickname: s.nickname,
+              isOnline: true,
+            });
+          }
+        });
+      }
+
       const opts = list.map((u: any) => ({
-        label: `${u.nickname || u.username} (@${u.username})`,
+        label: `${u.isOnline ? '🟢 [在线]' : '⚪ [离线]'} ${u.nickname || u.username} (@${u.username})`,
         value: String(u.username),
         userId: u.userId,
       }));
@@ -628,6 +649,13 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
       fetchAuditLogs(1, auditPageSize);
     }
   }, [activeTab]);
+
+  // 打开广播弹窗时自动拉取最新在线/系统用户列表
+  useEffect(() => {
+    if (broadcastModalOpen) {
+      fetchOnlineUsersList();
+    }
+  }, [broadcastModalOpen]);
 
   // 定时自动刷新会话与指标
   useEffect(() => {
@@ -1801,9 +1829,14 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
                       <Select
                         showSearch
                         allowClear
-                        placeholder="点选在线用户或直接输入用户名 / UID..."
+                        placeholder="点选在线/系统用户或直接输入用户名 / UID..."
                         options={combinedUserOptions}
                         onSearch={(val) => setUserSearchText(val)}
+                        onFocus={() => {
+                          if (onlineUserOptions.length === 0) {
+                            fetchOnlineUsersList();
+                          }
+                        }}
                         onChange={(val, option: any) => {
                           if (option && option.userId) {
                             broadcastForm.setFieldsValue({ targetUserId: option.userId, targetUsername: option.value });
@@ -1816,8 +1849,9 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
                           }
                         }}
                         filterOption={(input, option) =>
-                          (option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
-                          (option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+                          String(option?.label ?? '').toLowerCase().includes(input.toLowerCase()) ||
+                          String(option?.value ?? '').toLowerCase().includes(input.toLowerCase()) ||
+                          String(option?.userId ?? '').includes(input)
                         }
                       />
                     </Form.Item>

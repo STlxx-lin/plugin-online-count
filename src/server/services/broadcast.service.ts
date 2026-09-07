@@ -241,9 +241,9 @@ export class BroadcastService {
       // 更新数据库
       if (database) {
         try {
-          const repo = database.getRepository('online_broadcasts');
-          if (repo) {
-            const record = await repo.findOne({ filter: { broadcastId: id } });
+          const model = database.getModel('online_broadcasts');
+          if (model) {
+            const record: any = await model.findOne({ where: { broadcastId: id } });
             if (record) {
               let readUsers: any[] = [];
               if (Array.isArray(record.readUsers)) {
@@ -257,7 +257,8 @@ export class BroadcastService {
               const already = readUsers.some(
                 (u: any) =>
                   (clientInfo.userId && u.userId === clientInfo.userId) ||
-                  (clientInfo.sessionId && u.ip === clientInfo.ip)
+                  (clientInfo.username && u.username === clientInfo.username) ||
+                  (clientInfo.sessionId && u.sessionId === clientInfo.sessionId)
               );
               if (!already) {
                 readUsers.push({
@@ -265,19 +266,24 @@ export class BroadcastService {
                   username: clientInfo.username || (clientInfo.userId ? `User #${clientInfo.userId}` : '访客'),
                   nickname: clientInfo.nickname || clientInfo.username || '访客',
                   ip: clientInfo.ip || null,
+                  sessionId: clientInfo.sessionId || null,
                   readAt: nowStr,
                 });
-                await repo.update({
-                  filterByTk: record.id,
-                  values: {
+                await model.update(
+                  {
                     readCount: readUsers.length,
                     readUsers,
                   },
-                });
+                  {
+                    where: { id: record.id },
+                  }
+                );
               }
             }
           }
-        } catch {}
+        } catch (err: any) {
+          console.warn('[BroadcastService] recordRead DB update error:', err?.message || err);
+        }
       }
     }
   }

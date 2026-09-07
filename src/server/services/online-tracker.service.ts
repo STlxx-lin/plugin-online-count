@@ -1,5 +1,6 @@
 import { Application } from '@nocobase/server';
 import { CronJob } from 'cron';
+import { Op } from 'sequelize';
 import { OnlineConfigService } from './online-config.service';
 import { SessionControlService } from './session-control.service';
 import { CONFIG_KEYS } from '../constants';
@@ -665,14 +666,14 @@ export class OnlineTrackerService {
     const nowSec = Math.floor(now / 1000);
     if (nowSec % 600 < 30) {
       try {
-        const repo = this.app.db.getRepository('online_sessions');
-        if (repo && expiredTokens.length > 0) {
+        const sessionModel = this.app.db.getModel('online_sessions');
+        if (sessionModel && expiredTokens.length > 0) {
           const expireDate = new Date(now - thresholdSec * 1000 * 4);
-          await repo
+          await sessionModel
             .destroy({
-              filter: {
+              where: {
                 lastActiveAt: {
-                  $lt: expireDate,
+                  [Op.lt]: expireDate,
                 },
               },
             })
