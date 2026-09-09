@@ -740,6 +740,21 @@ export class OnlineTrackerService {
         // 清理过期历史审计日志
         const retentionDays = this.configService.getNumber(CONFIG_KEYS.AUDIT_LOG_RETENTION_DAYS, 30);
         await AuditLogService.getInstance().cleanupOldLogs(this.app.db, retentionDays);
+
+        // 清理超过 30 天的过时历史时序采样数据，防止表无限膨胀
+        const historyModel = this.app.db.getModel('online_history_stats');
+        if (historyModel) {
+          const expireHistoryDate = new Date(now - 30 * 24 * 60 * 60 * 1000);
+          await historyModel
+            .destroy({
+              where: {
+                sampleTime: {
+                  [Op.lt]: expireHistoryDate,
+                },
+              },
+            })
+            .catch(() => {});
+        }
       } catch {}
     }
 

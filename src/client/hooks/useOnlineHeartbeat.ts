@@ -55,6 +55,13 @@ export function getClientAuthInfo(api?: any) {
       }
     }
 
+    if (!token && typeof document !== 'undefined' && document.cookie) {
+      const match = document.cookie.match(/(?:^|;\s*)(?:token|NOCOBASE_TOKEN)=([^;]+)/);
+      if (match) {
+        token = decodeURIComponent(match[1]).replace(/^Bearer\s+/i, '').trim();
+      }
+    }
+
     if (!user) {
       try {
         const raw = window.localStorage?.getItem('NOCOBASE_USER') || window.sessionStorage?.getItem('NOCOBASE_USER');
@@ -72,7 +79,6 @@ export function safeRedirectToLogin(api?: any, reasonText?: string) {
   try {
     if (api?.auth?.signOut && typeof api.auth.signOut === 'function') {
       api.auth.signOut();
-      return;
     }
   } catch {}
 
@@ -88,7 +94,10 @@ export function safeRedirectToLogin(api?: any, reasonText?: string) {
   if (typeof window !== 'undefined') {
     const publicPath = (window as any).__nocobase_public_path__ || '/';
     const prefix = publicPath.endsWith('/') ? publicPath : `${publicPath}/`;
-    window.location.href = `${prefix}signin`;
+    const curPath = window.location.pathname || '';
+    if (!curPath.endsWith('/signin') && !curPath.endsWith('/signin/')) {
+      window.location.href = `${prefix}signin`;
+    }
   }
 }
 
