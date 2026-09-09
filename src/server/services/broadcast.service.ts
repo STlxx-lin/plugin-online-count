@@ -6,6 +6,7 @@ export interface ReadUserItem {
   username?: string | null;
   nickname?: string | null;
   ip?: string | null;
+  sessionId?: string | null;
   readAt: string;
 }
 
@@ -30,6 +31,8 @@ export class BroadcastService {
   private static instance: BroadcastService;
   private messages: BroadcastMessage[] = [];
   private db?: Database;
+  // 已读回执快速防重缓存 (Set<"broadcastId:userId|sessionId">)
+  private acknowledgedReads = new Set<string>();
 
   public static getInstance(): BroadcastService {
     if (!BroadcastService.instance) {
@@ -61,22 +64,30 @@ export class BroadcastService {
         },
       });
 
-      this.messages = records.map((r: any) => ({
-        id: r.broadcastId,
-        title: r.title,
-        content: r.content,
-        mode: r.mode || 'notification',
-        scope: r.scope || 'all',
-        targetUserId: r.targetUserId ? Number(r.targetUserId) : null,
-        targetUsername: r.targetUsername || null,
-        targetSessionId: r.targetSessionId || null,
-        type: r.type || 'info',
-        status: r.status || 'active',
-        createdAt: new Date(r.createdAt).getTime(),
-        expiresAt: new Date(r.expiresAt).getTime(),
-        readCount: r.readCount || 0,
-        readUsers: Array.isArray(r.readUsers) ? r.readUsers : [],
-      }));
+      this.messages = records.map((r: any) => {
+        const rowReadUsers = Array.isArray(r.readUsers) ? r.readUsers : [];
+        rowReadUsers.forEach((u: any) => {
+          const userKey = u.userId ? `u_${u.userId}` : `s_${u.sessionId || u.ip}`;
+          this.acknowledgedReads.add(`${r.broadcastId}:${userKey}`);
+        });
+
+        return {
+          id: r.broadcastId,
+          title: r.title,
+          content: r.content,
+          mode: r.mode || 'notification',
+          scope: r.scope || 'all',
+          targetUserId: r.targetUserId ? Number(r.targetUserId) : null,
+          targetUsername: r.targetUsername || null,
+          targetSessionId: r.targetSessionId || null,
+          type: r.type || 'info',
+          status: r.status || 'active',
+          createdAt: new Date(r.createdAt).getTime(),
+          expiresAt: new Date(r.expiresAt).getTime(),
+          readCount: r.readCount || 0,
+          readUsers: rowReadUsers,
+        };
+      });
     } catch (err) {
       console.warn('[BroadcastService] loadFromDb failed:', err);
     }
@@ -217,6 +228,13 @@ export class BroadcastService {
     const nowStr = new Date().toISOString();
 
     for (const id of messageIds) {
+      const userKey = clientInfo.userId ? `u_${clientInfo.userId}` : `s_${clientInfo.sessionId || clientInfo.ip || 'anon'}`;
+      const dedupKey = `${id}:${userKey}`;
+      if (this.acknowledgedReads.has(dedupKey)) {
+        continue;
+      }
+      this.acknowledgedReads.add(dedupKey);
+
       // 更新内存
       const memMsg = this.messages.find((m) => m.id === id);
       if (memMsg) {
@@ -224,7 +242,7 @@ export class BroadcastService {
         const already = memMsg.readUsers.some(
           (u) =>
             (clientInfo.userId && u.userId === clientInfo.userId) ||
-            (clientInfo.sessionId && u.ip === clientInfo.ip)
+            (clientInfo.sessionId && u.sessionId === clientInfo.sessionId)
         );
         if (!already) {
           memMsg.readUsers.push({
@@ -232,13 +250,14 @@ export class BroadcastService {
             username: clientInfo.username || (clientInfo.userId ? `User #${clientInfo.userId}` : '访客'),
             nickname: clientInfo.nickname || clientInfo.username || '访客',
             ip: clientInfo.ip || null,
+            sessionId: clientInfo.sessionId || null,
             readAt: nowStr,
           });
           memMsg.readCount = memMsg.readUsers.length;
         }
       }
 
-      // 更新数据库
+      // 异步持久化到数据库
       if (database) {
         try {
           const model = database.getModel('online_broadcasts');
@@ -257,7 +276,6 @@ export class BroadcastService {
               const already = readUsers.some(
                 (u: any) =>
                   (clientInfo.userId && u.userId === clientInfo.userId) ||
-                  (clientInfo.username && u.username === clientInfo.username) ||
                   (clientInfo.sessionId && u.sessionId === clientInfo.sessionId)
               );
               if (!already) {
@@ -424,10 +442,17 @@ export class BroadcastService {
   }
 
   /**
-   * 清理过期消息
+   * 清理过期消息及对应的已读缓存
    */
   private cleanExpired() {
     const now = Date.now();
     this.messages = this.messages.filter((msg) => msg.expiresAt >= now && msg.status === 'active');
+    const activeIds = new Set(this.messages.map((m) => m.id));
+    for (const key of this.acknowledgedReads) {
+      const bcId = key.split(':')[0];
+      if (!activeIds.has(bcId)) {
+        this.acknowledgedReads.delete(key);
+      }
+    }
   }
 }

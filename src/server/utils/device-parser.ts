@@ -96,7 +96,7 @@ export function normalizeIp(rawIp = ''): string {
 
   // 本地环回地址规范化
   if (ip === '::1' || ip === '0:0:0:0:0:0:0:1') {
-    return '127.0.0.1 (::1)';
+    return '127.0.0.1';
   }
 
   return ip;

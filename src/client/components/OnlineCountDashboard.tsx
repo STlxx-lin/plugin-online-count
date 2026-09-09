@@ -50,7 +50,7 @@ import {
   CheckCircleOutlined,
 } from '@ant-design/icons';
 import { OnlineTrendChart } from './OnlineTrendChart';
-import { useOnlineHeartbeat, getClientAuthInfo } from '../hooks/useOnlineHeartbeat';
+import { getClientAuthInfo, safeRedirectToLogin } from '../hooks/useOnlineHeartbeat';
 
 const { Text } = Typography;
 
@@ -87,7 +87,6 @@ const BROADCAST_TEMPLATES: Record<string, { title: string; content: string; type
 };
 
 export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
-  useOnlineHeartbeat(api);
   const [activeTab, setActiveTab] = useState('sessions');
   const [stats, setStats] = useState({
     totalOnline: 0,
@@ -176,22 +175,7 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
 
   // 优雅登出并引导跳转登录页
   const handleLogoutAndRedirect = (reasonText?: string) => {
-    try {
-      localStorage.removeItem('NOCOBASE_TOKEN');
-      localStorage.removeItem('token');
-      sessionStorage.removeItem('NOCOBASE_TOKEN');
-      sessionStorage.removeItem('token');
-    } catch {}
-    Modal.warning({
-      title: '会话已终止',
-      content: reasonText || '当前登录会话已下线，请重新登录系统。',
-      okText: '重新登录',
-      centered: true,
-      zIndex: 100000,
-      onOk: () => {
-        window.location.href = '/signin';
-      },
-    });
+    safeRedirectToLogin(api, reasonText);
   };
 
   // 通用安全解析分页列表数据，全面兼容 NocoBase 的多种响应包装
@@ -614,20 +598,6 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
 
   useEffect(() => {
     const initDashboard = async () => {
-      try {
-        const { user, token } = getClientAuthInfo(api);
-        await api?.request?.({
-          url: 'onlineCount:heartbeat',
-          method: 'POST',
-          data: {
-            userId: user?.id,
-            username: user?.username || user?.email,
-            nickname: user?.nickname || user?.username,
-            token,
-            currentPath: typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/',
-          },
-        });
-      } catch {}
       fetchStats();
       fetchSessions(1, pageSize);
       fetchBroadcasts(1, broadcastPageSize);
@@ -1218,21 +1188,7 @@ export const OnlineCountDashboard: React.FC<{ api: any }> = ({ api }) => {
           <Switch checked={autoRefresh} onChange={setAutoRefresh} size="small" />
           <Button
             icon={<ReloadOutlined />}
-            onClick={async () => {
-              try {
-                const { user, token } = getClientAuthInfo(api);
-                await api?.request?.({
-                  url: 'onlineCount:heartbeat',
-                  method: 'POST',
-                  data: {
-                    userId: user?.id,
-                    username: user?.username || user?.email,
-                    nickname: user?.nickname || user?.username,
-                    token,
-                    currentPath: typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/',
-                  },
-                });
-              } catch {}
+            onClick={() => {
               fetchStats();
               fetchSessions(page, pageSize, keyword, deviceFilter, activeTab === 'sessions');
               fetchBroadcasts(broadcastPage, broadcastPageSize, broadcastStatusFilter, activeTab === 'broadcasts');

@@ -41,70 +41,55 @@ export function getClientAuthInfo(api?: any) {
   }
 
   if (typeof window !== 'undefined') {
-    const storages = [window.localStorage, window.sessionStorage].filter(Boolean);
-
-    // 1. 全局扫描所有 Storage Key 寻找 JWT Token (Base64 以 eyJ 开头)
+    // 快速读取标准 Key，杜绝遍历整个 Storage 的反模式
     if (!token) {
-      for (const s of storages) {
+      const commonKeys = ['NOCOBASE_TOKEN', 'token', 'auth_token', 'NOCOBASE_JWT'];
+      for (const k of commonKeys) {
         try {
-          for (let i = 0; i < s.length; i++) {
-            const k = s.key(i) || '';
-            const v = s.getItem(k) || '';
-            if (typeof v === 'string') {
-              const clean = v.replace(/^Bearer\s+/i, '').replace(/^"|"$/g, '').trim();
-              if (clean.startsWith('eyJ') && clean.split('.').length >= 3) {
-                token = clean;
-                break;
-              }
-            }
-          }
-          if (token) break;
-        } catch {}
-      }
-    }
-
-    // 2. 扫描常用 Token 命名
-    if (!token) {
-      const commonKeys = ['NOCOBASE_TOKEN', 'NOCOBASE_JWT', 'token', 'auth_token', 'jwt', 'access_token'];
-      for (const s of storages) {
-        for (const k of commonKeys) {
-          const val = s.getItem(k);
+          const val = window.localStorage?.getItem(k) || window.sessionStorage?.getItem(k);
           if (val && val !== 'null' && val !== 'undefined') {
             token = val.replace(/^"|"$/g, '').replace(/^Bearer\s+/i, '').trim();
             break;
           }
-        }
-        if (token) break;
+        } catch {}
       }
     }
 
-    // 3. 扫描用户信息
     if (!user) {
-      for (const s of storages) {
-        try {
-          for (let i = 0; i < s.length; i++) {
-            const k = s.key(i) || '';
-            if (/user/i.test(k)) {
-              const raw = s.getItem(k);
-              if (raw && (raw.startsWith('{') || raw.startsWith('"{\\'))) {
-                try {
-                  const unescaped = raw.startsWith('"') ? JSON.parse(raw) : raw;
-                  const parsed = typeof unescaped === 'string' ? JSON.parse(unescaped) : unescaped;
-                  if (parsed && (parsed.id || parsed.userId || parsed.username)) {
-                    user = parsed;
-                    break;
-                  }
-                } catch {}
-              }
-            }
-          }
-          if (user) break;
-        } catch {}
-      }
+      try {
+        const raw = window.localStorage?.getItem('NOCOBASE_USER') || window.sessionStorage?.getItem('NOCOBASE_USER');
+        if (raw) {
+          user = JSON.parse(raw);
+        }
+      } catch {}
     }
   }
 
   return { user, token };
+}
+
+export function safeRedirectToLogin(api?: any, reasonText?: string) {
+  try {
+    if (api?.auth?.signOut && typeof api.auth.signOut === 'function') {
+      api.auth.signOut();
+      return;
+    }
+  } catch {}
+
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage?.removeItem('NOCOBASE_TOKEN');
+      window.localStorage?.removeItem('token');
+      window.sessionStorage?.removeItem('NOCOBASE_TOKEN');
+      window.sessionStorage?.removeItem('token');
+    }
+  } catch {}
+
+  if (typeof window !== 'undefined') {
+    const publicPath = (window as any).__nocobase_public_path__ || '/';
+    const prefix = publicPath.endsWith('/') ? publicPath : `${publicPath}/`;
+    window.location.href = `${prefix}signin`;
+  }
 }
 
 async function sendHeartbeatRequest(api: any, data: any, token?: string) {
@@ -122,7 +107,7 @@ async function sendHeartbeatRequest(api: any, data: any, token?: string) {
     }
   }
 
-  // 3. 原生 fetch 强力兜底
+  // 2. 原生 fetch 强力兜底
   if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -148,23 +133,34 @@ async function sendHeartbeatRequest(api: any, data: any, token?: string) {
   return null;
 }
 
-export function useOnlineHeartbeat(api: any) {
-  const isKickedRef = useRef(false);
-  const lastActivityRef = useRef<number>(Date.now());
-  const idleTimeoutMinutesRef = useRef<number>(30);
-  const isIdlePromptingRef = useRef(false);
-  const idleCountdownTimerRef = useRef<any>(null);
+// 模块级单例看门狗，确保全局无论被挂载多少次，仅维持单一心跳定时器
+let activeHeartbeatSubscribers = 0;
+let globalHeartbeatTimer: any = null;
+let globalIdleCheckTimer: any = null;
+let globalCountdownTimer: any = null;
+let globalIsKicked = false;
+let globalIsIdlePrompting = false;
+let globalLastActivity = Date.now();
+let globalIdleTimeoutMinutes = 30;
 
+export function useOnlineHeartbeat(api: any) {
   useEffect(() => {
-    let heartbeatTimer: any = null;
-    let idleCheckTimer: any = null;
+    activeHeartbeatSubscribers++;
+    if (activeHeartbeatSubscribers > 1) {
+      // 已有全局心跳看门狗在运行，直接复用，不重复创建定时器与监听
+      return () => {
+        activeHeartbeatSubscribers = Math.max(0, activeHeartbeatSubscribers - 1);
+      };
+    }
+
     const intervalSec = 30;
 
     const performLogout = async (reason: string) => {
-      if (isKickedRef.current) return;
-      isKickedRef.current = true;
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-      if (idleCheckTimer) clearInterval(idleCheckTimer);
+      if (globalIsKicked) return;
+      globalIsKicked = true;
+      if (globalHeartbeatTimer) clearInterval(globalHeartbeatTimer);
+      if (globalIdleCheckTimer) clearInterval(globalIdleCheckTimer);
+      if (globalCountdownTimer) clearInterval(globalCountdownTimer);
 
       const { token } = getClientAuthInfo(api);
       try {
@@ -174,24 +170,6 @@ export function useOnlineHeartbeat(api: any) {
             method: 'POST',
             data: { token },
           });
-        } else if (typeof window !== 'undefined') {
-          await window.fetch('/api/onlineCount:reportIdle', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
-            body: JSON.stringify({ token }),
-          });
-        }
-      } catch {}
-
-      try {
-        if (typeof window !== 'undefined') {
-          window.localStorage?.removeItem('NOCOBASE_TOKEN');
-          window.localStorage?.removeItem('token');
-          window.sessionStorage?.removeItem('NOCOBASE_TOKEN');
-          window.sessionStorage?.removeItem('token');
         }
       } catch {}
 
@@ -202,13 +180,13 @@ export function useOnlineHeartbeat(api: any) {
         zIndex: 100000,
         centered: true,
         onOk: () => {
-          window.location.href = '/signin';
+          safeRedirectToLogin(api, reason);
         },
       });
     };
 
     const sendHeartbeat = async () => {
-      if (isKickedRef.current) return;
+      if (globalIsKicked) return;
 
       const { user, token } = getClientAuthInfo(api);
       const readMessageIds = getReadBroadcastIds();
@@ -228,10 +206,11 @@ export function useOnlineHeartbeat(api: any) {
         );
 
         // 1. 强制下线拦截
-        if (data?.kicked && !isKickedRef.current) {
-          isKickedRef.current = true;
-          if (heartbeatTimer) clearInterval(heartbeatTimer);
-          if (idleCheckTimer) clearInterval(idleCheckTimer);
+        if (data?.kicked && !globalIsKicked) {
+          globalIsKicked = true;
+          if (globalHeartbeatTimer) clearInterval(globalHeartbeatTimer);
+          if (globalIdleCheckTimer) clearInterval(globalIdleCheckTimer);
+          if (globalCountdownTimer) clearInterval(globalCountdownTimer);
 
           Modal.error({
             title: '会话已终止',
@@ -240,7 +219,7 @@ export function useOnlineHeartbeat(api: any) {
             zIndex: 100000,
             centered: true,
             onOk: () => {
-              window.location.href = '/signin';
+              safeRedirectToLogin(api, data.reason);
             },
           });
           return;
@@ -248,7 +227,7 @@ export function useOnlineHeartbeat(api: any) {
 
         // 2. 更新超时阈值配置
         if (typeof data?.idleTimeoutMinutes === 'number') {
-          idleTimeoutMinutesRef.current = data.idleTimeoutMinutes;
+          globalIdleTimeoutMinutes = data.idleTimeoutMinutes;
         }
 
         // 3. 消费即时广播通知
@@ -308,10 +287,11 @@ export function useOnlineHeartbeat(api: any) {
           }
         }
       } catch (err: any) {
-        if (err?.response?.status === 401 && err?.response?.data?.kicked && !isKickedRef.current) {
-          isKickedRef.current = true;
-          if (heartbeatTimer) clearInterval(heartbeatTimer);
-          if (idleCheckTimer) clearInterval(idleCheckTimer);
+        if (err?.response?.status === 401 && err?.response?.data?.kicked && !globalIsKicked) {
+          globalIsKicked = true;
+          if (globalHeartbeatTimer) clearInterval(globalHeartbeatTimer);
+          if (globalIdleCheckTimer) clearInterval(globalIdleCheckTimer);
+          if (globalCountdownTimer) clearInterval(globalCountdownTimer);
           Modal.error({
             title: '会话已终止',
             content: err.response.data.message || '您已被管理员强制下线，请重新登录。',
@@ -319,7 +299,7 @@ export function useOnlineHeartbeat(api: any) {
             zIndex: 100000,
             centered: true,
             onOk: () => {
-              window.location.href = '/signin';
+              safeRedirectToLogin(api, err.response.data.message);
             },
           });
         }
@@ -328,18 +308,18 @@ export function useOnlineHeartbeat(api: any) {
 
     // 空闲超时检查
     const checkIdle = () => {
-      const idleMinutes = idleTimeoutMinutesRef.current;
-      if (!idleMinutes || idleMinutes <= 0 || isKickedRef.current) return;
+      const idleMinutes = globalIdleTimeoutMinutes;
+      if (!idleMinutes || idleMinutes <= 0 || globalIsKicked) return;
 
-      const idleMs = Date.now() - lastActivityRef.current;
+      const idleMs = Date.now() - globalLastActivity;
       const timeoutMs = idleMinutes * 60 * 1000;
       const warnThresholdMs = Math.max(0, timeoutMs - 60 * 1000);
 
       const { user } = getClientAuthInfo(api);
       if (!user?.id) return;
 
-      if (idleMs >= warnThresholdMs && !isIdlePromptingRef.current) {
-        isIdlePromptingRef.current = true;
+      if (idleMs >= warnThresholdMs && !globalIsIdlePrompting) {
+        globalIsIdlePrompting = true;
         let remainingSec = Math.max(1, Math.round((timeoutMs - idleMs) / 1000));
 
         const modal = Modal.confirm({
@@ -355,9 +335,9 @@ export function useOnlineHeartbeat(api: any) {
           zIndex: 100000,
           centered: true,
           onOk: () => {
-            lastActivityRef.current = Date.now();
-            isIdlePromptingRef.current = false;
-            if (idleCountdownTimerRef.current) clearInterval(idleCountdownTimerRef.current);
+            globalLastActivity = Date.now();
+            globalIsIdlePrompting = false;
+            if (globalCountdownTimer) clearInterval(globalCountdownTimer);
             sendHeartbeat();
           },
           onCancel: () => {
@@ -365,12 +345,12 @@ export function useOnlineHeartbeat(api: any) {
           },
         });
 
-        idleCountdownTimerRef.current = setInterval(() => {
+        globalCountdownTimer = setInterval(() => {
           remainingSec--;
           if (remainingSec <= 0) {
-            clearInterval(idleCountdownTimerRef.current);
+            clearInterval(globalCountdownTimer);
             modal.destroy();
-            isIdlePromptingRef.current = false;
+            globalIsIdlePrompting = false;
             performLogout('长时间未响应操作，系统已自动登出');
           } else {
             modal.update({
@@ -388,12 +368,11 @@ export function useOnlineHeartbeat(api: any) {
 
     const handleActivity = () => {
       const now = Date.now();
-      if (now - lastActivityRef.current > 5000) {
-        lastActivityRef.current = now;
+      if (now - globalLastActivity > 5000) {
+        globalLastActivity = now;
       }
     };
 
-    // 精简监听事件类型，仅在真实键鼠交互时更新时间，绝不阻断任何 DOM 行为
     const activityEvents = ['pointerdown', 'keydown'];
     activityEvents.forEach((event) => {
       try {
@@ -401,27 +380,29 @@ export function useOnlineHeartbeat(api: any) {
       } catch {}
     });
 
-    // 挂载时立即执行一次心跳上报
     sendHeartbeat();
-    heartbeatTimer = setInterval(sendHeartbeat, intervalSec * 1000);
-    idleCheckTimer = setInterval(checkIdle, 15000);
+    globalHeartbeatTimer = setInterval(sendHeartbeat, intervalSec * 1000);
+    globalIdleCheckTimer = setInterval(checkIdle, 15000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        lastActivityRef.current = Date.now();
+        globalLastActivity = Date.now();
         sendHeartbeat();
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-      if (idleCheckTimer) clearInterval(idleCheckTimer);
-      if (idleCountdownTimerRef.current) clearInterval(idleCountdownTimerRef.current);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      activityEvents.forEach((event) => {
-        window.removeEventListener(event, handleActivity);
-      });
+      activeHeartbeatSubscribers = Math.max(0, activeHeartbeatSubscribers - 1);
+      if (activeHeartbeatSubscribers === 0) {
+        if (globalHeartbeatTimer) clearInterval(globalHeartbeatTimer);
+        if (globalIdleCheckTimer) clearInterval(globalIdleCheckTimer);
+        if (globalCountdownTimer) clearInterval(globalCountdownTimer);
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+        activityEvents.forEach((event) => {
+          window.removeEventListener(event, handleActivity);
+        });
+      }
     };
   }, [api]);
 }

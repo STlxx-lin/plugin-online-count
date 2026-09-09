@@ -1,6 +1,6 @@
 # NocoBase 在线人数统计与会话管理插件 (`@nocobase/plugin-online-count`)
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)
 ![NocoBase](https://img.shields.io/badge/nocobase-v2.0+-green.svg)
 
 ## 📌 功能特性
@@ -61,4 +61,4 @@ yarn nocobase pm enable @nocobase/plugin-online-count
 
 ## 📄 许可证
 
-MIT License
+AGPL-3.0 License

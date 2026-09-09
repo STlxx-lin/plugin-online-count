@@ -51,39 +51,8 @@ export function createOnlineCountResource(
           token = ctx.cookies.get('token') || ctx.cookies.get('SESSION') || '';
         }
 
-        // 如果中间件未提供 currentUser，但携带了有效 JWT Token，从中解析 userId 并从数据库加载用户信息
-        if (!currentUser?.id && token && typeof token === 'string' && token.includes('.')) {
-          try {
-            const parts = token.split('.');
-            if (parts.length >= 2) {
-              const payloadStr = Buffer.from(parts[1], 'base64').toString('utf8');
-              const payload = JSON.parse(payloadStr);
-              const tokenUserId = payload?.userId || payload?.id;
-              if (tokenUserId) {
-                const userModel = ctx.db.getModel('users');
-                if (userModel) {
-                  const dbUser: any = await userModel.findByPk(tokenUserId);
-                  if (dbUser) {
-                    currentUser = dbUser;
-                  }
-                }
-              }
-            }
-          } catch {}
-        }
-
-        // 备用：从参数 userId 核验数据库
-        if (!currentUser?.id && params.userId) {
-          try {
-            const userModel = ctx.db.getModel('users');
-            if (userModel) {
-              const dbUser: any = await userModel.findByPk(params.userId);
-              if (dbUser) {
-                currentUser = dbUser;
-              }
-            }
-          } catch {}
-        }
+        // 仅严格信任经由 NocoBase 核心鉴权中间件校验通过的身份 (ctx.state.currentUser)
+        // 彻底杜绝通过请求体 params.userId 或无签名 Base64 JWT 伪造用户身份与越权窃听广播
 
         // 严格以认证的用户为准，提取身份信息
         let finalUserId: number | null = null;
