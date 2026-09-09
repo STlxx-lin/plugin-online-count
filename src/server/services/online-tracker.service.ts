@@ -262,6 +262,7 @@ export class OnlineTrackerService {
       // 异步持久化到数据库
       this.persistSessionToDb(session);
     } else {
+      const wasGuest = !session.userId;
       session.lastActiveAt = now;
       session.currentPath = currentPath;
       session.ip = cleanIp;
@@ -281,6 +282,24 @@ export class OnlineTrackerService {
         }
         if (nickname && nickname !== '访客') {
           session.nickname = nickname;
+        }
+
+        // 若当前会话此前为匿名访客，现检测到认证用户，执行状态迁移与索引更新
+        if (wasGuest) {
+          this.removeTokenFromIndexes(token, { ...session, userId: null });
+          this.addSessionToIndexes(session);
+
+          // 立即异步更新数据库记录，将访客记录升级为认证用户记录
+          void this.app.db.getRepository('online_sessions').update({
+            filter: { token },
+            values: {
+              userId,
+              username: session.username,
+              nickname: session.nickname,
+              lastActiveAt: now,
+              currentPath,
+            },
+          }).catch(() => {});
         }
       }
 

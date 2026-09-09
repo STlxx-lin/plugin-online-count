@@ -37,24 +37,77 @@ export function createOnlineCountResource(
        */
       heartbeat: async (ctx: Context, next: Next) => {
         const params = getParams(ctx);
-        let currentUser = ctx.state?.currentUser;
+        let currentUser = ctx.state?.currentUser || (ctx.state as any)?.user || ctx.auth?.user;
 
-        // 提取 Token
+        // 提取 Token（全面覆盖请求体、请求头 Bearer、Context 方法与多格式 Cookie）
         let token = params.token;
         if (!token) {
-          const authHeader = ctx.headers['authorization'] || ctx.headers['Authorization'];
+          const authHeader = ctx.headers['authorization'] || ctx.headers['Authorization'] || ctx.get?.('Authorization');
           if (authHeader && typeof authHeader === 'string') {
             token = authHeader.replace(/^Bearer\s+/i, '').trim();
           }
         }
+        if (!token && typeof (ctx as any).getBearerToken === 'function') {
+          try {
+            token = (ctx as any).getBearerToken();
+          } catch {}
+        }
         if (!token && ctx.cookies) {
-          token = ctx.cookies.get('token') || ctx.cookies.get('SESSION') || '';
+          token =
+            ctx.cookies.get('token') ||
+            ctx.cookies.get('main_authToken') ||
+            ctx.cookies.get('authToken') ||
+            ctx.cookies.get('SESSION') ||
+            '';
         }
 
-        // 仅严格信任经由 NocoBase 核心鉴权中间件校验通过的身份 (ctx.state.currentUser)
-        // 彻底杜绝通过请求体 params.userId 或无签名 Base64 JWT 伪造用户身份与越权窃听广播
+        // 核心安全修复：心跳接口在 ACL 中被注册为 public（以便同时统计匿名访客在线人数），
+        // NocoBase 的 BaseAuth.skipCheck() 会判定 isPublic: true 并直接跳过鉴权中间件，
+        // 导致 ctx.state.currentUser 恒为空。
+        // 若客户端携带了 Token，通过 NocoBase 官方加密签名体系（防伪造与越权）进行安全验签与身份解析：
+        if (!currentUser && token) {
+          // 1. 尝试直接调用 ctx.auth.check() 进行标准官方鉴权校验
+          if (typeof ctx.auth?.check === 'function') {
+            try {
+              const checkResult = await ctx.auth.check();
+              if (checkResult?.user) {
+                currentUser = checkResult.user;
+              } else if (checkResult?.id) {
+                currentUser = checkResult;
+              }
+            } catch (e) {
+              // 忽略校验错误（如 public 请求下上下文未完全初始化）
+            }
+          }
 
-        // 严格以认证的用户为准，提取身份信息
+          // 2. 若 ctx.auth.check() 未能识别，调用官方 JwtService 进行密钥签名校验（防客户端伪造）
+          if (!currentUser) {
+            const jwtService = ctx.app?.authManager?.jwt || (ctx.auth as any)?.jwt;
+            if (jwtService && typeof jwtService.decode === 'function') {
+              try {
+                // jwtService.decode 内部使用 jsonwebtoken.verify(token, secret) 强校验签名
+                const payload: any = await jwtService.decode(token);
+                if (payload?.userId) {
+                  const userRepo = ctx.db.getRepository('users');
+                  if (userRepo) {
+                    currentUser = await userRepo.findOne({
+                      filter: { id: payload.userId },
+                      raw: true,
+                    });
+                  }
+                }
+              } catch (e) {
+                // Token 验签失败（非法伪造或已过期），安全忽略，保留访客判定
+              }
+            }
+          }
+        }
+
+        if (currentUser) {
+          ctx.state.currentUser = currentUser;
+        }
+
+        // 严格以官方认证通过的用户为准，提取身份信息
         let finalUserId: number | null = null;
         let finalUsername: string | null = null;
         let finalNickname: string | null = null;

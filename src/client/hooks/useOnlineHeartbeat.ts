@@ -41,9 +41,17 @@ export function getClientAuthInfo(api?: any) {
   }
 
   if (typeof window !== 'undefined') {
-    // 快速读取标准 Key，杜绝遍历整个 Storage 的反模式
+    // 快速读取标准 Key，兼容 NocoBase Storage 前缀（如 MAIN_TOKEN）
     if (!token) {
-      const commonKeys = ['NOCOBASE_TOKEN', 'token', 'auth_token', 'NOCOBASE_JWT'];
+      const commonKeys = [
+        'NOCOBASE_TOKEN',
+        'token',
+        'auth_token',
+        'NOCOBASE_JWT',
+        'MAIN_TOKEN',
+        'MAIN_token',
+        'main_token',
+      ];
       for (const k of commonKeys) {
         try {
           const val = window.localStorage?.getItem(k) || window.sessionStorage?.getItem(k);
@@ -56,10 +64,35 @@ export function getClientAuthInfo(api?: any) {
     }
 
     if (!token && typeof document !== 'undefined' && document.cookie) {
-      const match = document.cookie.match(/(?:^|;\s*)(?:token|NOCOBASE_TOKEN)=([^;]+)/);
+      const match = document.cookie.match(/(?:^|;\s*)(?:token|NOCOBASE_TOKEN|main_authToken|authToken)=([^;]+)/);
       if (match) {
         token = decodeURIComponent(match[1]).replace(/^Bearer\s+/i, '').trim();
       }
+    }
+
+    // 若通过上述渠道成功获取了合法 Token，但 user 对象未初始化，从 JWT Payload 安全解析出用户基本信息
+    if (!user && token && typeof token === 'string' && token.includes('.')) {
+      try {
+        const parts = token.split('.');
+        if (parts.length >= 2) {
+          const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+          const jsonStr = decodeURIComponent(
+            atob(base64)
+              .split('')
+              .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+              .join('')
+          );
+          const payload = JSON.parse(jsonStr);
+          if (payload?.userId) {
+            user = {
+              id: payload.userId,
+              roleName: payload.roleName,
+              username: payload.username || `User_${payload.userId}`,
+              nickname: payload.nickname || payload.username || `User #${payload.userId}`,
+            };
+          }
+        }
+      } catch {}
     }
 
     if (!user) {
@@ -102,6 +135,11 @@ export function safeRedirectToLogin(api?: any, reasonText?: string) {
 }
 
 async function sendHeartbeatRequest(api: any, data: any, token?: string) {
+  const reqHeaders: Record<string, string> = {};
+  if (token) {
+    reqHeaders['Authorization'] = `Bearer ${token}`;
+  }
+
   // 1. 优先使用标准 NocoBase API Client
   if (api && typeof api.request === 'function' && !api.__isDummy) {
     try {
@@ -109,6 +147,7 @@ async function sendHeartbeatRequest(api: any, data: any, token?: string) {
         url: 'onlineCount:heartbeat',
         method: 'POST',
         data,
+        headers: reqHeaders,
       });
       return res?.data?.data || res?.data;
     } catch (err: any) {
@@ -120,10 +159,8 @@ async function sendHeartbeatRequest(api: any, data: any, token?: string) {
   if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...reqHeaders,
     };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
     const resp = await window.fetch('/api/onlineCount:heartbeat', {
       method: 'POST',
       headers,
