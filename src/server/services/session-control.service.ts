@@ -101,6 +101,42 @@ export class SessionControlService {
   }
 
   /**
+   * 系统启动时从数据库预热加载 24 小时内的有效被踢记录到内存黑名单
+   */
+  async loadActiveKicksFromDb(maxAgeMs = 24 * 60 * 60 * 1000): Promise<number> {
+    try {
+      const repo = this.app.db.getRepository('online_sessions');
+      if (!repo) return 0;
+      const since = new Date(Date.now() - maxAgeMs);
+      const records = await repo.find({
+        filter: {
+          isKicked: true,
+          updatedAt: {
+            $gte: since,
+          },
+        },
+      });
+
+      let loaded = 0;
+      for (const item of records) {
+        if (item.token) {
+          this.kickedTokens.set(item.token, {
+            token: item.token,
+            userId: item.userId,
+            reason: item.kickReason || '已被管理员强制下线',
+            kickedAt: item.updatedAt ? new Date(item.updatedAt) : new Date(),
+          });
+          loaded++;
+        }
+      }
+      return loaded;
+    } catch (e) {
+      this.app.logger.warn?.('[OnlineCount] Failed to warm up kicked tokens from db:', e);
+      return 0;
+    }
+  }
+
+  /**
    * 定期清理黑名单中超过 24 小时的过期 Token，防止内存泄漏
    */
   cleanupExpiredKicks(maxAgeMs = 24 * 60 * 60 * 1000): void {

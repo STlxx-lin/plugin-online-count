@@ -111,8 +111,17 @@ export class PluginOnlineCountServer extends Plugin {
       (ctx: any) => {
         const user = ctx.state?.currentUser;
         if (!user) return false;
-        // 支持超级管理员（id === 1 或 具有 root/admin 标识角色）
+        // 1. 超级管理员拥有最高权限（id === 1）
         if (user.id === 1) return true;
+        // 2. 支持 NocoBase 官方动态权限判定（支持企业角色分配 pm.plugin-name.onlineCount 或 onlineCount 权限）
+        if (
+          ctx.can?.(`pm.${this.name}.onlineCount`) ||
+          ctx.can?.('onlineCount:listSessions') ||
+          ctx.can?.('onlineCount:*')
+        ) {
+          return true;
+        }
+        // 3. 内置管理员角色兜底
         const roles = user.roles || ctx.state?.currentRoles || [];
         return roles.some((r: any) => {
           const roleName = typeof r === 'string' ? r : r.name || r.roleName;
@@ -120,6 +129,9 @@ export class PluginOnlineCountServer extends Plugin {
         });
       },
     );
+
+    // 预热加载数据库中近 24 小时未过期的被踢出黑名单记录，避免服务重启遗忘
+    await this.sessionControlService.loadActiveKicksFromDb();
 
     await this.trackerService.init();
     this.app.logger.info('[OnlineCountPlugin] Online Count & Session Management loaded.');

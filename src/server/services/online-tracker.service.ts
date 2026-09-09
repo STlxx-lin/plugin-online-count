@@ -47,6 +47,9 @@ export class OnlineTrackerService {
 
   // 内存会话快速缓存 (Token -> OnlineSessionItem)
   private memorySessions = new Map<string, OnlineSessionItem>();
+  // 用户维度与访客 IP 维度索引缓存，将心跳去重由 O(N) 降低至 O(1)
+  private userTokensIndex = new Map<string, Set<string>>();
+  private guestIpTokensIndex = new Map<string, Set<string>>();
 
   private cleanupJob: CronJob | null = null;
   private sampleJob: CronJob | null = null;
@@ -59,6 +62,44 @@ export class OnlineTrackerService {
     this.app = app;
     this.configService = configService;
     this.sessionControlService = sessionControlService;
+  }
+
+  private addSessionToIndexes(session: OnlineSessionItem) {
+    if (session.userId) {
+      const uKey = String(session.userId);
+      let set = this.userTokensIndex.get(uKey);
+      if (!set) {
+        set = new Set();
+        this.userTokensIndex.set(uKey, set);
+      }
+      set.add(session.token);
+    } else if (session.ip) {
+      let set = this.guestIpTokensIndex.get(session.ip);
+      if (!set) {
+        set = new Set();
+        this.guestIpTokensIndex.set(session.ip, set);
+      }
+      set.add(session.token);
+    }
+  }
+
+  private removeTokenFromIndexes(token: string, session?: OnlineSessionItem) {
+    const s = session || this.memorySessions.get(token);
+    if (!s) return;
+    if (s.userId) {
+      const uKey = String(s.userId);
+      const set = this.userTokensIndex.get(uKey);
+      if (set) {
+        set.delete(token);
+        if (set.size === 0) this.userTokensIndex.delete(uKey);
+      }
+    } else if (s.ip) {
+      const set = this.guestIpTokensIndex.get(s.ip);
+      if (set) {
+        set.delete(token);
+        if (set.size === 0) this.guestIpTokensIndex.delete(s.ip);
+      }
+    }
   }
 
   /**
@@ -107,27 +148,32 @@ export class OnlineTrackerService {
       return { success: true, kicked: false };
     }
 
-    // 3. 检查单点登录并发策略
+    // 3. 检查单点登录并发策略（基于用户索引 O(1) 精确查找该用户已有会话）
     const concurrentPolicy = this.configService.getString(CONFIG_KEYS.CONCURRENT_POLICY, 'allow_multiple');
     if (userId && concurrentPolicy === 'single_kick_previous') {
-      // 踢出该用户的其它活跃会话
-      for (const [otherToken, s] of this.memorySessions.entries()) {
-        if (s.userId === userId && otherToken !== token && !s.isKicked) {
-          await this.sessionControlService.kickoutToken(otherToken, '账号已在另一台设备登录，您已被迫下线');
-          AuditLogService.getInstance().recordSessionEnd(this.app.db, {
-            sessionId: s.token,
-            userId: s.userId ? Number(s.userId) : null,
-            username: s.username,
-            nickname: s.nickname,
-            ip: s.ip,
-            device: s.device,
-            os: s.os,
-            browser: s.browser,
-            loginAt: s.loginAt,
-            lastActiveAt: s.lastActiveAt,
-            terminationReason: 'mutex_kickout',
-            detail: '单点登录互斥踢出：账号在另一台设备登录',
-          });
+      const userTokens = this.userTokensIndex.get(String(userId));
+      if (userTokens) {
+        for (const otherToken of userTokens) {
+          if (otherToken !== token) {
+            const s = this.memorySessions.get(otherToken);
+            if (s && !s.isKicked) {
+              await this.sessionControlService.kickoutToken(otherToken, '账号已在另一台设备登录，您已被迫下线');
+              AuditLogService.getInstance().recordSessionEnd(this.app.db, {
+                sessionId: s.token,
+                userId: s.userId ? Number(s.userId) : null,
+                username: s.username,
+                nickname: s.nickname,
+                ip: s.ip,
+                device: s.device,
+                os: s.os,
+                browser: s.browser,
+                loginAt: s.loginAt,
+                lastActiveAt: s.lastActiveAt,
+                terminationReason: 'mutex_kickout',
+                detail: '单点登录互斥踢出：账号在另一台设备登录',
+              });
+            }
+          }
         }
       }
     }
@@ -144,37 +190,45 @@ export class OnlineTrackerService {
     const accumulatedTokens = new Set<string>();
 
     if (userId) {
-      for (const [otherToken, s] of this.memorySessions.entries()) {
-        if (otherToken !== token && !s.isKicked) {
-          // 同一认证用户在相同终端设备下，判定为同一设备（包括 IPv4 与 IPv6 双栈或 IP 漂移切换）
-          const isSameUserDevice =
-            String(s.userId) === String(userId) &&
-            s.device === device &&
-            (s.os === os || s.browser === browser || !s.os || !os);
+      const userTokens = this.userTokensIndex.get(String(userId));
+      if (userTokens) {
+        for (const otherToken of userTokens) {
+          if (otherToken !== token) {
+            const s = this.memorySessions.get(otherToken);
+            if (s && !s.isKicked) {
+              // 同一认证用户在相同终端设备下，判定为同一设备（包括 IPv4 与 IPv6 双栈或 IP 漂移切换）
+              const isSameUserDevice =
+                s.device === device &&
+                (s.os === os || s.browser === browser || !s.os || !os);
 
-          if (isSameUserDevice) {
-            if (s.ipv4) inheritedIpv4 = inheritedIpv4 || s.ipv4;
-            else if (isIPv4(s.ip)) inheritedIpv4 = inheritedIpv4 || s.ip;
+              if (isSameUserDevice) {
+                if (s.ipv4) inheritedIpv4 = inheritedIpv4 || s.ipv4;
+                else if (isIPv4(s.ip)) inheritedIpv4 = inheritedIpv4 || s.ip;
 
-            if (s.ipv6) inheritedIpv6 = inheritedIpv6 || s.ipv6;
-            else if (isIPv6(s.ip)) inheritedIpv6 = inheritedIpv6 || s.ip;
+                if (s.ipv6) inheritedIpv6 = inheritedIpv6 || s.ipv6;
+                else if (isIPv6(s.ip)) inheritedIpv6 = inheritedIpv6 || s.ip;
 
-            accumulatedTokens.add(otherToken);
-            if (Array.isArray(s.relatedTokens)) {
-              s.relatedTokens.forEach((t) => accumulatedTokens.add(t));
+                accumulatedTokens.add(otherToken);
+                if (Array.isArray(s.relatedTokens)) {
+                  s.relatedTokens.forEach((t) => accumulatedTokens.add(t));
+                }
+
+                // 清理已被新会话接替的旧重复 token，避免在内存中分裂为两个并存会话
+                this.removeTokenFromIndexes(otherToken, s);
+                this.memorySessions.delete(otherToken);
+              }
             }
-
-            // 清理已被新会话接替的旧重复 token，避免在内存中分裂为两个并存会话
-            this.memorySessions.delete(otherToken);
           }
+        }
+      }
 
-          // 同一 IP（或其对应双栈 IP）下的未登录访客，在认证用户上线后自动合并清理
-          const isGuestOnSameIp =
-            !s.userId &&
-            (s.ip === cleanIp || s.ipv4 === cleanIp || s.ipv6 === cleanIp);
-          if (isGuestOnSameIp) {
-            this.memorySessions.delete(otherToken);
-          }
+      // 清理当前 IP 上的未登录访客残留（基于访客 IP 索引 O(1) 定位）
+      const guestTokens = this.guestIpTokensIndex.get(cleanIp);
+      if (guestTokens) {
+        for (const gToken of guestTokens) {
+          const gs = this.memorySessions.get(gToken);
+          this.removeTokenFromIndexes(gToken, gs);
+          this.memorySessions.delete(gToken);
         }
       }
     }
@@ -203,6 +257,7 @@ export class OnlineTrackerService {
         lastDbSync: now.getTime(),
       };
       this.memorySessions.set(token, session);
+      this.addSessionToIndexes(session);
 
       // 异步持久化到数据库
       this.persistSessionToDb(session);
@@ -619,6 +674,7 @@ export class OnlineTrackerService {
     }
 
     for (const t of tokensToRemove) {
+      this.removeTokenFromIndexes(t);
       this.memorySessions.delete(t);
     }
 
@@ -659,6 +715,7 @@ export class OnlineTrackerService {
     }
 
     for (const token of expiredTokens) {
+      this.removeTokenFromIndexes(token);
       this.memorySessions.delete(token);
     }
 
@@ -710,7 +767,7 @@ export class OnlineTrackerService {
       });
 
       for (const s of dbSessions) {
-        this.memorySessions.set(s.token, {
+        const sessionItem: OnlineSessionItem = {
           id: s.id,
           token: s.token,
           userId: s.userId,
@@ -726,7 +783,9 @@ export class OnlineTrackerService {
           lastActiveAt: new Date(s.lastActiveAt || s.updatedAt),
           isKicked: Boolean(s.isKicked),
           kickReason: s.kickReason,
-        });
+        };
+        this.memorySessions.set(s.token, sessionItem);
+        this.addSessionToIndexes(sessionItem);
       }
     } catch {}
   }
@@ -735,6 +794,23 @@ export class OnlineTrackerService {
     try {
       const repo = this.app.db.getRepository('online_sessions');
       if (!repo) return;
+
+      const existing = await repo.findOne({
+        filter: { token: session.token },
+      });
+
+      if (existing) {
+        session.id = existing.id;
+        await repo.update({
+          filterByTk: existing.id,
+          values: {
+            lastActiveAt: session.lastActiveAt,
+            currentPath: session.currentPath,
+            isKicked: false,
+          },
+        }).catch(() => {});
+        return;
+      }
 
       const created = await repo.create({
         values: {
@@ -752,7 +828,8 @@ export class OnlineTrackerService {
           lastActiveAt: session.lastActiveAt,
           isKicked: false,
         },
-      });
+      }).catch(() => {});
+
       if (created) {
         session.id = created.id;
       }
