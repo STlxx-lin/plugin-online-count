@@ -1,7 +1,13 @@
 # NocoBase 在线人数统计与会话管理插件 (`@nocobase/plugin-online-count`)
 
-![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)
-![NocoBase](https://img.shields.io/badge/nocobase-v2.0+-green.svg)
+<p align="left">
+  <b>简体中文</b> | <a href="./README_EN.md">English</a>
+</p>
+
+[![Views](https://komarev.com/ghpvc/?username=nocobase-plugin-online-count&color=007ec6&style=flat-square&label=Views)](https://github.com/STlxx-lin/nocobase-plugin-online-count)
+[![Version](https://img.shields.io/badge/version-v0.2.15-blue.svg)](https://github.com/STlxx-lin/nocobase-plugin-online-count/releases)
+[![NocoBase Version](https://img.shields.io/badge/NocoBase-2.x-brightgreen.svg)](https://www.nocobase.com)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
 ## 📌 功能特性
 
