@@ -189,19 +189,18 @@ let globalIsIdlePrompting = false;
 let globalLastActivity = Date.now();
 let globalIdleTimeoutMinutes = 30;
 
-export function useOnlineHeartbeat(api: any) {
-  useEffect(() => {
-    activeHeartbeatSubscribers++;
-    if (activeHeartbeatSubscribers > 1) {
-      // 已有全局心跳看门狗在运行，直接复用，不重复创建定时器与监听
-      return () => {
-        activeHeartbeatSubscribers = Math.max(0, activeHeartbeatSubscribers - 1);
-      };
-    }
+export function startOnlineHeartbeatWatchdog(api: any): () => void {
+  activeHeartbeatSubscribers++;
+  if (activeHeartbeatSubscribers > 1) {
+    // 已有全局心跳看门狗在运行，直接复用，不重复创建定时器与监听
+    return () => {
+      activeHeartbeatSubscribers = Math.max(0, activeHeartbeatSubscribers - 1);
+    };
+  }
 
-    const intervalSec = 30;
+  const intervalSec = 30;
 
-    const performLogout = async (reason: string) => {
+  const performLogout = async (reason: string) => {
       if (globalIsKicked) return;
       globalIsKicked = true;
       if (globalHeartbeatTimer) clearInterval(globalHeartbeatTimer);
@@ -450,5 +449,10 @@ export function useOnlineHeartbeat(api: any) {
         });
       }
     };
+}
+
+export function useOnlineHeartbeat(api: any) {
+  useEffect(() => {
+    return startOnlineHeartbeatWatchdog(api);
   }, [api]);
 }

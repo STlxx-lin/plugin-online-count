@@ -2,7 +2,10 @@ import React from 'react';
 import { Plugin } from '@nocobase/client-v2';
 import { OnlineCountPage } from '../client/pages/OnlineCountPage';
 import { useAPIClient as useV2APIClient } from './hooks/useAPIClient';
-import { GlobalHeartbeatProviderV2 } from './providers/GlobalHeartbeatProvider';
+import { startOnlineHeartbeatWatchdog } from '../client/hooks/useOnlineHeartbeat';
+import { mountOnlineNavBadgeV2, GlobalHeartbeatProviderV2 } from './providers/GlobalHeartbeatProvider';
+
+export { GlobalHeartbeatProviderV2 };
 
 const V2OnlineCountPageWrapper: React.FC = () => {
   const api = useV2APIClient();
@@ -11,7 +14,11 @@ const V2OnlineCountPageWrapper: React.FC = () => {
 
 export class PluginOnlineCountClientV2 extends Plugin {
   async load() {
-    this.app.addProvider(GlobalHeartbeatProviderV2, { api: this.app.apiClient });
+    // 1. 启动纯 JS 单例心跳看门狗（无侵入、无全树重渲染）
+    startOnlineHeartbeatWatchdog(this.app.apiClient);
+
+    // 2. 独立挂载顶部导航徽章单例
+    mountOnlineNavBadgeV2(this.app.apiClient);
 
     const manager = this.app.pluginSettingsManager as any;
     if (!manager) return;
