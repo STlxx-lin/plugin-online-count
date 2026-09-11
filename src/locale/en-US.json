@@ -1,0 +1,20 @@
+{
+  "Online Count": "Online Users & Sessions",
+  "Online Users & Sessions": "Online Users & Sessions",
+  "Real-time Monitoring": "Real-time Monitoring",
+  "Active Sessions": "Active Sessions",
+  "Broadcast Notifications": "Broadcast Notifications",
+  "Audit Logs": "Audit Logs",
+  "System Settings": "System Settings",
+  "Historical Trend": "Historical Trend",
+  "Total Online": "Total Online",
+  "Unique Users": "Unique Users",
+  "Peak Today": "Peak Today",
+  "Force Logout": "Force Logout",
+  "Refresh": "Refresh",
+  "Send Broadcast": "Send Broadcast",
+  "Idle Timeout": "Idle Timeout",
+  "Concurrent Login Control": "Concurrent Login Control",
+  "Action Successful": "Action Successful",
+  "Action Failed": "Action Failed"
+}

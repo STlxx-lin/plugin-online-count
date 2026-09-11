@@ -1,0 +1,20 @@
+{
+  "Online Count": "在线用户与会话",
+  "Online Users & Sessions": "在线用户与会话",
+  "Real-time Monitoring": "实时监控",
+  "Active Sessions": "活跃会话",
+  "Broadcast Notifications": "系统广播",
+  "Audit Logs": "审计日志",
+  "System Settings": "策略设置",
+  "Historical Trend": "历史趋势",
+  "Total Online": "当前在线总数",
+  "Unique Users": "在线独立用户",
+  "Peak Today": "今日峰值",
+  "Force Logout": "强制下线",
+  "Refresh": "刷新",
+  "Send Broadcast": "发布广播",
+  "Idle Timeout": "空闲挂机超时",
+  "Concurrent Login Control": "并发登录控制",
+  "Action Successful": "操作成功",
+  "Action Failed": "操作失败"
+}

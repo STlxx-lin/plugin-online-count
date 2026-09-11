@@ -23,7 +23,7 @@ export class PluginOnlineCountClient extends Plugin {
     const manager = this.app?.pluginSettingsManager as any;
     if (!manager) return;
 
-    const title = '在线用户与会话';
+    const title = this.app.i18n?.t ? this.app.i18n.t('Online Users & Sessions') : '在线用户与会话';
     const icon = 'TeamOutlined';
     const menuKey = 'online-count';
     const pageName = `${menuKey}.index`;
